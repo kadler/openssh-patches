@@ -1,0 +1,78 @@
+--- a/session.c	2015-06-30 21:35:31.000000000 -0500
++++ b/session.c	2016-02-08 19:48:10.618312179 -0600
+@@ -829,7 +829,11 @@
+ 		char *shell = s->pw->pw_shell;
+ 
+ 		if (shell[0] == '\0')	/* empty shell means /bin/sh */
++#ifndef __PASE__
+ 			shell =_PATH_BSHELL;
++#else
++			shell = options.pase_shell;
++#endif
+ 		PRIVSEP(audit_run_command(shell));
+ 	}
+ #endif
+@@ -1218,6 +1222,13 @@
+ 	if (getenv("TZ"))
+ 		child_set_env(&env, &envsize, "TZ", getenv("TZ"));
+ 
++#ifdef __PASE__
++	/* Needed to support usernames greater than 8 chars in PASE */
++	if (getenv("PASE_USRGRP_LIMITED"))
++		child_set_env(&env, &envsize, "PASE_USRGRP_LIMITED",
++					  getenv("PASE_USRGRP_LIMITED"));
++#endif
++
+ 	/* Set custom environment options from RSA authentication. */
+ 	if (!options.use_login) {
+ 		while (custom_environment) {
+@@ -1493,6 +1504,10 @@
+ #ifdef USE_LIBIAF
+ 	int doing_chroot = 0;
+ #endif
++	
++#ifdef __PASE__
++	pase_set_legacy_chroot_dir(&options, pw);
++#endif
+ 
+ 	platform_setusercontext(pw);
+ 
+@@ -1510,6 +1525,7 @@
+ 			perror("setgid");
+ 			exit(1);
+ 		}
++#ifndef __PASE__
+ 		/* Initialize the group list. */
+ 		if (initgroups(pw->pw_name, pw->pw_gid) < 0) {
+ 			perror("initgroups");
+@@ -1517,6 +1533,7 @@
+ 		}
+ 		endgrent();
+ #endif
++#endif
+ 
+ 		platform_setusercontext_post_groups(pw);
+ 
+@@ -1690,6 +1707,10 @@
+ #ifdef _UNICOS
+ 	cray_setup(pw->pw_uid, pw->pw_name, command);
+ #endif /* _UNICOS */
++	
++#ifdef __PASE__
++	pase_post_fork_child();
++#endif
+ 
+ 	/*
+ 	 * Login(1) does this as well, and it needs uid 0 for the "-h"
+@@ -1727,7 +1748,11 @@
+ 	 * Get the shell from the password data.  An empty shell field is
+ 	 * legal, and means /bin/sh.
+ 	 */
++#ifndef __PASE__
+ 	shell = (pw->pw_shell[0] == '\0') ? _PATH_BSHELL : pw->pw_shell;
++#else
++	shell = (pw->pw_shell[0] == '\0') ? options.pase_shell : pw->pw_shell;
++#endif
+ 
+ 	/*
+ 	 * Make sure $SHELL points to the shell from the password file,

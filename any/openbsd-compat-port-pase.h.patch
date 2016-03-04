@@ -1,0 +1,75 @@
+--- a/openbsd-compat/port-pase.h	1969-12-31 18:00:00.000000000 -0600
++++ b/openbsd-compat/port-pase.h	2016-02-16 18:55:17.517428826 -0600
+@@ -0,0 +1,72 @@
++/*
++ *
++ * Copyright (c) 2016 IBM Corporation.  All rights reserved.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE AUTHOR ``AS IS'' AND ANY EXPRESS OR
++ * IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
++ * OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
++ * IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY DIRECT, INDIRECT,
++ * INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
++ * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
++ * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
++ * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
++ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
++ * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
++ */
++
++#ifdef __PASE__
++
++#define CUSTOM_SYS_AUTH_PASSWD 1
++#define CUSTOM_SYS_AUTH_RECORD_LOGIN 1
++#define CUSTOM_FAILED_LOGIN 1
++
++// TODO: should check if this is supported/needed
++// actually since configure does find it
++#undef HAVE_SETPCRED
++
++
++/* API error code, from qusec.h */
++typedef struct Qus_EC {
++	int  Bytes_Provided;
++	int  Bytes_Available;
++	char Msg_Id[7];
++	char Reserved;
++	/*char Exception_Data[];*/           /* Varying length        */
++} Qus_EC_t;
++
++#define DEFAULT_ERROR_CODE { sizeof(Qus_EC_t), 0 }
++
++typedef struct {
++	char handle[12];
++} profile_handle_t;
++
++
++/* Values for Qp0zSetTerminalMode() - from qp0ztrml.h */
++#define QP0Z_TERMINAL_INPUT_MODE  0x01 /* Set input mode @B2A*/
++#define QP0Z_TERMINAL_HIDDEN      0xBD /* Set hidden input mode @B2A*/
++#define QP0Z_TERMINAL_NORMAL      0xBE /* Set normal input mode @B2A*/
++#define QP0Z_TERMINAL_PREVIOUS    0x49 /* Set previous mode @B2A*/
++
++int Qp0zIsATerminal(int fd);
++int Qp0zSetTerminalMode(unsigned char mode, unsigned char type);
++
++
++int pase_set_job_type();
++void pase_post_fork_child();
++
++#ifndef PORT_PASE_C
++#define setgroups pase_setgroups
++#endif
++
++int pase_setgroups(int, gid_t []);
++
++#endif /* __PASE__ */

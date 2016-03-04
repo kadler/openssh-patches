@@ -1,0 +1,10 @@
+--- a/openbsd-compat/openbsd-compat.h	2015-06-30 21:35:31.000000000 -0500
++++ b/openbsd-compat/openbsd-compat.h	2016-01-28 18:06:31.613094355 -0600
+@@ -271,6 +271,7 @@
+ #include "port-aix.h"
+ #include "port-irix.h"
+ #include "port-linux.h"
++#include "port-pase.h"
+ #include "port-solaris.h"
+ #include "port-tun.h"
+ #include "port-uw.h"

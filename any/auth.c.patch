@@ -1,0 +1,14 @@
+--- a/auth.c	2015-06-30 21:35:31.000000000 -0500
++++ b/auth.c	2016-02-05 11:35:20.077252267 -0600
+@@ -162,7 +162,11 @@
+ 	if (options.chroot_directory == NULL ||
+ 	    strcasecmp(options.chroot_directory, "none") == 0) {
+ 		char *shell = xstrdup((pw->pw_shell[0] == '\0') ?
++#ifdef __PASE__
++		    options.pase_shell : pw->pw_shell);
++#else
+ 		    _PATH_BSHELL : pw->pw_shell); /* empty = /bin/sh */
++#endif
+ 
+ 		if (stat(shell, &st) != 0) {
+ 			logit("User %.100s not allowed because shell %.100s "

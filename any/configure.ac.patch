@@ -1,0 +1,48 @@
+--- a/configure.ac	2015-06-30 21:35:31.000000000 -0500
++++ b/configure.ac	2016-02-05 13:53:32.873627316 -0600
+@@ -855,6 +855,45 @@
+ 	    [syslog_r function is safe to use in in a signal handler])
+ 	TEST_MALLOC_OPTIONS="AFGJPRX"
+ 	;;
++*-*-os400)
++	LIBS="$LIBS -lpthreads -liconv"
++	
++	if test "$GCC" = "yes"; then
++		CFLAGS="$CFLAGS -D__PASE__"
++	else
++		CFLAGS="$CFLAGS -D__PASE__ -qmaxmem=-1 -qalign=natural -qldbl128"
++	fi
++	
++	AC_MSG_CHECKING([how to specify blibpath for linker ($LD)])
++	if (test -z "$blibpath"); then
++		blibpath="/usr/lib:/lib"
++	fi
++	
++	saved_LDFLAGS="$LDFLAGS"
++	if test "$GCC" = "yes"; then
++		flags="-Wl,-blibpath: -Wl,-rpath, -blibpath:"
++	else
++		flags="-blibpath: -Wl,-blibpath: -Wl,-rpath,"
++	fi
++	for tryflags in $flags ;do
++		if (test -z "$blibflags"); then
++		LDFLAGS="$saved_LDFLAGS $tryflags$blibpath"
++		AC_LINK_IFELSE([AC_LANG_PROGRAM([[]], [[]])],
++		[blibflags=$tryflags], [])
++		fi
++	done
++	if (test -z "$blibflags"); then
++		AC_MSG_RESULT([not found])
++		AC_MSG_ERROR([*** must be able to specify blibpath on PASE - check config.log])
++	else
++		AC_MSG_RESULT([$blibflags])
++	fi
++    
++    
++	AC_DEFINE([DISABLE_LASTLOG], [1], [Define if you don't want to use lastlog])
++	AC_DEFINE([DISABLE_UTMP], [1], [Define if you don't want to use utmp])
++	AC_DEFINE([DISABLE_WTMP], [1], [Define if you don't want to use wtmp])
++    ;;
+ *-*-solaris*)
+ 	if test "x$withval" != "xno" ; then
+ 		need_dash_r=1

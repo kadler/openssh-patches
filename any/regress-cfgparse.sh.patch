@@ -1,0 +1,33 @@
+--- a/regress/cfgparse.sh	2015-06-30 21:35:31.000000000 -0500
++++ b/regress/cfgparse.sh	2016-02-01 13:09:14.411917728 -0600
+@@ -16,6 +16,10 @@
+ grep "HostKey " $OBJ/sshd_config > $OBJ/sshd_config_minimal
+ SSHD_KEYS="`cat $OBJ/sshd_config_minimal`"
+ 
++[ `uname -s` = 'OS400' ] && cat >> $OBJ/sshd_config_minimal <<EOD
++UsePrivilegeSeparation no
++EOD
++
+ verbose "reparse minimal config"
+ ($SUDO ${SSHD} -T -f $OBJ/sshd_config_minimal >$OBJ/sshd_config.1 &&
+  $SUDO ${SSHD} -T -f $OBJ/sshd_config.1 >$OBJ/sshd_config.2 &&
+@@ -49,6 +53,9 @@
+ [ X${SKIP_IPV6} = Xyes ] || cat >> $OBJ/sshd_config.1 <<EOD
+ listenaddress ::1
+ EOD
++[ `uname -s` = 'OS400' ] && cat >> $OBJ/sshd_config.1 <<EOD
++UsePrivilegeSeparation no
++EOD
+ 
+ ($SUDO ${SSHD} -T -f $OBJ/sshd_config.1 | \
+  grep 'listenaddress ' >$OBJ/sshd_config.2 &&
+@@ -65,6 +72,9 @@
+ [ X${SKIP_IPV6} = Xyes ] || cat >> $OBJ/sshd_config.1 <<EOD
+ listenaddress ::1
+ EOD
++[ `uname -s` = 'OS400' ] && cat >> $OBJ/sshd_config.1 <<EOD
++UsePrivilegeSeparation no
++EOD
+ 
+ ($SUDO ${SSHD} -T -f $OBJ/sshd_config.1 | \
+  grep 'listenaddress ' >$OBJ/sshd_config.2 &&

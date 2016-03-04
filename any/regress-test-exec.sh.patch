@@ -1,0 +1,14 @@
+--- a/regress/test-exec.sh	2015-06-30 21:35:31.000000000 -0500
++++ b/regress/test-exec.sh	2016-02-01 13:11:30.235923870 -0600
+@@ -411,6 +411,11 @@
+ 	Subsystem	sftp	$SFTPSERVER
+ EOF
+ 
++if [ `uname -s` = 'OS400' ]; then
++	trace "disable sshd_config option UsePrivilegeSeparation"
++	echo "UsePrivilegeSeparation no" >> $OBJ/sshd_config
++fi
++
+ if [ ! -z "$TEST_SSH_SSHD_CONFOPTS" ]; then
+ 	trace "adding sshd_config option $TEST_SSH_SSHD_CONFOPTS"
+ 	echo "$TEST_SSH_SSHD_CONFOPTS" >> $OBJ/sshd_config

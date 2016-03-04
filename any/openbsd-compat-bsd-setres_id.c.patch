@@ -1,0 +1,24 @@
+--- a/openbsd-compat/bsd-setres_id.c	2015-06-30 21:35:31.000000000 -0500
++++ b/openbsd-compat/bsd-setres_id.c	2016-02-08 19:40:57.386292586 -0600
+@@ -26,12 +26,14 @@
+ 
+ #include "log.h"
+ 
++#ifndef __PASE__
++
+ #if !defined(HAVE_SETRESGID) || defined(BROKEN_SETRESGID)
+ int
+ setresgid(gid_t rgid, gid_t egid, gid_t sgid)
+ {
+ 	int ret = 0, saved_errno;
+-
++	
+ 	if (rgid != sgid) {
+ 		errno = ENOSYS;
+ 		return -1;
+@@ -98,3 +100,5 @@
+ 	return ret;
+ }
+ #endif
++
++#endif /* __PASE__ */

@@ -1,0 +1,61 @@
+--- a/openbsd-compat/readpassphrase.c	2015-06-30 21:35:31.000000000 -0500
++++ b/openbsd-compat/readpassphrase.c	2016-01-28 18:47:48.905206392 -0600
+@@ -63,6 +63,10 @@
+ {
+ 	ssize_t nr;
+ 	int input, output, save_errno, i, need_restart;
++#ifdef __PASE__
++       int echo_off_5250=0;
++	int pase_is_5250 = 0;
++#endif
+ 	char ch, *p, *end;
+ 	struct termios term, oterm;
+ 	struct sigaction sa, savealrm, saveint, savehup, savequit, saveterm;
+@@ -73,6 +77,18 @@
+ 		errno = EINVAL;
+ 		return(NULL);
+ 	}
++	
++#ifdef __PASE__
++	/* When run under a 5250 session on IBM i, there will be no TTY,
++	 * but we can disable and enable echoing through the
++	 * Qp0zSetTerminalMode API. 
++	 */
++	pase_is_5250 = Qp0zIsATerminal(STDIN_FILENO);
++	if(pase_is_5250 == 1) {
++		flags |= RPP_STDIN;
++		flags &= ~RPP_REQUIRE_TTY;
++	}
++#endif
+ 
+ restart:
+ 	for (i = 0; i < _NSIG; i++)
+@@ -113,6 +129,14 @@
+ 	(void)sigaction(SIGTTOU, &sa, &savettou);
+ 
+ 	/* Turn off echo if possible. */
++#ifdef __PASE__
++	if (pase_is_5250 && !echo_off_5250 && !(flags & RPP_ECHO_ON)) {
++		if (Qp0zSetTerminalMode(QP0Z_TERMINAL_INPUT_MODE,
++								QP0Z_TERMINAL_HIDDEN) == 0) {
++			echo_off_5250 = 1;
++		}
++	}
++#endif
+ 	if (input != STDIN_FILENO && tcgetattr(input, &oterm) == 0) {
+ 		memcpy(&term, &oterm, sizeof(term));
+ 		if (!(flags & RPP_ECHO_ON))
+@@ -155,6 +179,13 @@
+ 	}
+ 
+ 	/* Restore old terminal settings and signals. */
++#ifdef __PASE__
++	if (echo_off_5250) {
++		echo_off_5250 = 0;
++		Qp0zSetTerminalMode(QP0Z_TERMINAL_INPUT_MODE,
++							QP0Z_TERMINAL_PREVIOUS);
++	}
++#endif
+ 	if (memcmp(&term, &oterm, sizeof(term)) != 0) {
+ 		while (tcsetattr(input, _T_FLUSH, &oterm) == -1 &&
+ 		    errno == EINTR)

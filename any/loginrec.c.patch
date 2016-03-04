@@ -1,0 +1,11 @@
+--- a/loginrec.c	2015-06-30 21:35:31.000000000 -0500
++++ b/loginrec.c	2016-02-02 14:29:56.629578979 -0600
+@@ -432,7 +432,7 @@
+ int
+ login_write(struct logininfo *li)
+ {
+-#ifndef HAVE_CYGWIN
++#if !defined(HAVE_CYGWIN) && !defined(__PASE__)
+ 	if (geteuid() != 0) {
+ 		logit("Attempt to write login records by non-root user (aborting)");
+ 		return (1);

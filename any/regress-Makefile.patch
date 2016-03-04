@@ -1,0 +1,45 @@
+--- a/regress/Makefile	2015-06-30 21:35:31.000000000 -0500
++++ b/regress/Makefile	2016-02-09 15:47:52.965567647 -0600
+@@ -32,10 +32,6 @@
+ 		try-ciphers \
+ 		yes-head \
+ 		login-timeout \
+-		agent \
+-		agent-getpeereid \
+-		agent-timeout \
+-		agent-ptrace \
+ 		keyscan \
+ 		keygen-change \
+ 		keygen-convert \
+@@ -47,11 +43,9 @@
+ 		sftp-badcmds \
+ 		sftp-batch \
+ 		sftp-glob \
+-		sftp-perm \
+ 		reconfigure \
+ 		dynamic-forward \
+ 		forwarding \
+-		multiplex \
+ 		reexec \
+ 		brokenkeys \
+ 		cfgparse \
+@@ -71,10 +65,17 @@
+ 		krl \
+ 		multipubkey \
+ 		limit-keytype \
+-		hostkey-agent \
+ 		keygen-knownhosts \
+ 		hostkey-rotate \
+-		principals-command
++		principals-command \
++# 		agent \
++# 		agent-getpeereid \
++# 		agent-timeout \
++# 		agent-ptrace \
++# 		sftp-perm \
++# 		multiplex \
++# 		hostkey-agent \
++# 		
+ 
+ 
+ #		dhgex \

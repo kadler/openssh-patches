@@ -1,0 +1,12 @@
+--- a/servconf.h	2015-06-30 21:35:31.000000000 -0500
++++ b/servconf.h	2016-02-05 11:30:20.605238723 -0600
+@@ -194,6 +194,9 @@
+ 	char   *auth_methods[MAX_AUTH_METHODS];
+ 
+ 	int	fingerprint_hash;
++#ifdef __PASE__
++	char   *pase_shell;             /* shell to use */
++#endif
+ }       ServerOptions;
+ 
+ /* Information about the incoming connection as used by Match */

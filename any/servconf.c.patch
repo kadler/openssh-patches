@@ -1,0 +1,56 @@
+--- a/servconf.c	2015-06-30 21:35:31.000000000 -0500
++++ b/servconf.c	2016-02-08 16:28:56.301771534 -0600
+@@ -167,6 +167,9 @@
+ 	options->ip_qos_bulk = -1;
+ 	options->version_addendum = NULL;
+ 	options->fingerprint_hash = -1;
++#ifdef __PASE__
++	options->pase_shell = NULL;
++#endif
+ }
+ 
+ /* Returns 1 if a string option is unset or set to "none" or 0 otherwise. */
+@@ -344,6 +347,10 @@
+ 	/* Turn privilege separation on by default */
+ 	if (use_privsep == -1)
+ 		use_privsep = PRIVSEP_NOSANDBOX;
++#ifdef __PASE__
++	if (options->pase_shell == NULL)
++		options->pase_shell = xstrdup(_PATH_BSHELL);
++#endif
+ 
+ #define CLEAR_ON_NONE(v) \
+ 	do { \
+@@ -412,6 +419,9 @@
+ 	sAuthenticationMethods, sHostKeyAgent, sPermitUserRC,
+ 	sStreamLocalBindMask, sStreamLocalBindUnlink,
+ 	sAllowStreamLocalForwarding, sFingerprintHash,
++#ifdef __PASE__
++	sPaseShell,
++#endif
+ 	sDeprecated, sUnsupported
+ } ServerOpCodes;
+ 
+@@ -549,6 +559,9 @@
+ 	{ "streamlocalbindunlink", sStreamLocalBindUnlink, SSHCFG_ALL },
+ 	{ "allowstreamlocalforwarding", sAllowStreamLocalForwarding, SSHCFG_ALL },
+ 	{ "fingerprinthash", sFingerprintHash, SSHCFG_GLOBAL },
++#ifdef __PASE__
++	{ "ibmpaseforishell", sPaseShell},
++#endif
+ 	{ NULL, sBadOption, 0 }
+ };
+ 
+@@ -1672,6 +1686,12 @@
+ 			options->adm_forced_command = xstrdup(cp + len);
+ 		return 0;
+ 
++#ifdef __PASE__
++	case sPaseShell:
++		charptr = &options->pase_shell;
++		goto parse_filename;
++#endif
++
+ 	case sChrootDirectory:
+ 		charptr = &options->chroot_directory;
+ 

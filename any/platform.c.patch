@@ -1,0 +1,22 @@
+--- a/platform.c	2015-06-30 21:35:31.000000000 -0500
++++ b/platform.c	2016-02-08 19:47:44.258310987 -0600
+@@ -80,6 +80,9 @@
+ #ifdef LINUX_OOM_ADJUST
+ 	oom_adjust_restore();
+ #endif
++#ifdef __PASE__
++	pase_post_fork_child();
++#endif
+ }
+ 
+ /* return 1 if we are running with privilege to swap UIDs, 0 otherwise */
+@@ -89,6 +92,9 @@
+ #ifdef HAVE_CYGWIN
+ 	/* uid 0 is not special on Cygwin so always try */
+ 	return 1;
++#elif defined(__PASE__)
++	/* uid 0 is not special on IBM i so always try */
++	return 1;
+ #else
+ 	return (getuid() == 0 || geteuid() == 0);
+ #endif

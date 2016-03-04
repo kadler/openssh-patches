@@ -1,0 +1,11 @@
+--- a/auth1.c	2015-06-30 21:35:31.000000000 -0500
++++ b/auth1.c	2016-02-02 14:29:19.389577295 -0600
+@@ -423,7 +423,7 @@
+ 	 * If we are not running as root, the user must have the same uid as
+ 	 * the server.
+ 	 */
+-#ifndef HAVE_CYGWIN
++#if !defined(HAVE_CYGWIN) && !defined(__PASE__)
+ 	if (!use_privsep && getuid() != 0 && authctxt->pw &&
+ 	    authctxt->pw->pw_uid != getuid())
+ 		packet_disconnect("Cannot change user when server not running as root.");
