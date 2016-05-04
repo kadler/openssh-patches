@@ -1,0 +1,34 @@
+--- ssh-copy-id.orig	2016-05-03 19:19:00.304510000 -0500
++++ ssh-copy-id	2016-05-03 20:32:42.180329000 -0500
+@@ -1,4 +1,4 @@
+-#!/bin/sh
++#!/QOpenSys/usr/bin/ksh
+ 
+ # Copyright (c) 1999-2013 Philip Hands <phil@hands.com>
+ #               2013 Martin Kletzander <mkletzan@redhat.com>
+@@ -89,6 +89,25 @@
+   GET_ID="cat \"$PUB_ID_FILE\""
+ }
+ 
++if ! which mktemp > /dev/null 2>&1 ; then
++  mktemp() {
++    local TEMPLATE=`echo "$1" | sed 's/X*$//g'`
++    if [ "$TEMPLATE" == "$1" ] ; then
++      return 1
++    fi
++    
++    while [ 1 ] ; do
++      local SUFFIX="$$`date +%S`"
++      local FILE=`printf "$TEMPLATE%d" $SUFFIX`
++      if touch $FILE > /dev/null 2>&1 ; then
++        chmod 600 $FILE
++        echo $FILE
++        return 0
++      fi
++    done
++  }
++fi
++
+ if [ -n "$SSH_AUTH_SOCK" ] && ssh-add -L >/dev/null 2>&1 ; then
+   GET_ID="ssh-add -L"
+ fi
