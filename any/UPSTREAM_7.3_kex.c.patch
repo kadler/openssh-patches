@@ -1,0 +1,32 @@
+kadler: Modified to patch against 6.9p1
+
+commit 271df8185d9689b3fb0523f58514481b858f6843
+Author: djm@openbsd.org <djm@openbsd.org>
+Date:   Sun Dec 13 22:42:23 2015 +0000
+
+    upstream commit
+    
+    unbreak connections with peers that set
+     first_kex_follows; fix from Matt Johnston va bz#2515
+    
+    Upstream-ID: decc88ec4fc7515594fdb42b04aa03189a44184b
+
+diff --git a/kex.c b/kex.c
+index 8243164..2dba1c5 100644
+--- a/kex.c
++++ b/kex.c
+@@ -208,11 +208,11 @@ kex_buf2prop(struct sshbuf *raw, int *first_kex_follows, char ***propp)
+ 		debug2("kex_parse_kexinit: %s", proposal[i]);
+ 	}
+ 	/* first kex follows / reserved */
+-	if ((r = sshbuf_get_u8(b, &v)) != 0 ||
+-	    (r = sshbuf_get_u32(b, &i)) != 0)
++	if ((r = sshbuf_get_u8(b, &v)) != 0 ||	/* first_kex_follows */
++	    (r = sshbuf_get_u32(b, &i)) != 0)	/* reserved */
+ 		goto out;
+ 	if (first_kex_follows != NULL)
+-		*first_kex_follows = i;
++		*first_kex_follows = v;
+ 	debug2("kex_parse_kexinit: first_kex_follows %d ", v);
+ 	debug2("kex_parse_kexinit: reserved %u ", i);
+ 	r = 0;
