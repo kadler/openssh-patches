@@ -1,0 +1,173 @@
+diff -Nru a/openbsd-compat/i5osprng.c b/openbsd-compat/i5osprng.c
+--- a/openbsd-compat/i5osprng.c	1969-12-31 18:00:00.000000000 -0600
++++ b/openbsd-compat/i5osprng.c	2017-01-30 11:38:03.510846892 -0600
+@@ -0,0 +1,169 @@
++/* Name:  i5osprng.c
++ *
++ * Upcall to Qc3GenPRNs to obtain random numbers
++ *
++ * Compile with something like:
++ *   xlc -qalign=natural -qldbl128 -qlonglong -o i5osprng.o i5osprng.c
++ *
++ */
++
++#include <stdlib.h>
++#include <stdio.h>
++#include <errno.h>
++#include <malloc.h>
++#include <signal.h>
++#include <sys/types.h>
++#include <as400_types.h>
++#include <as400_protos.h>
++
++/*
++ * init_pid saves the process id (PID) of the process that
++ * extracted the ILE procedure pointers.
++ * init_pid is initialized to a value that is not a
++ * valid PID to force initialization on the first
++ * reference after the exec() of this program
++ *
++ * If your code uses pthread interfaces, you can
++ * alternatively provide a handler registered using
++ * pthread_atfork() to re-initialize ILE procedure
++ * pointers in the child process and use a pointer or
++ * flag in static storage to force reinitialization
++ * after exec()
++ */
++
++pid_t  init_pid = -1;
++ILEpointer*ILEtarget;  /* pointer to ILE procedure */
++
++/*
++ * ROUND_QUAD finds a 16-byte aligned memory
++ * location at or beyond a specified address
++ */
++
++#define ROUND_QUAD(x) (((size_t)(x) + 0xf) & ~0xf)
++
++/*
++ * do_i5osprng_init loads an ILE service program and extracts an
++ * ILE pointer to a procedure that is exported by that
++ * service program.
++ */
++
++int do_i5osprng_init()
++{
++    static char ILEtarget_buf[sizeof(ILEpointer) + 15];
++    unsigned long long actmark;
++    int rc;
++
++    /* _ILELOADX() loads the service program */
++    actmark = _ILELOADX("QSYS/QC3PRNG", ILELOAD_LIBOBJ);
++    if (actmark == -1) {
++        printf("QC3GENPRNS _ILELOADX RC=%d\n", errno);
++        return(-101);
++    }
++
++    /*
++     * xlc does not guarantee 16-byte alignment for
++     * static variables of any type, so we find an
++     * aligned area in an oversized buffer. _ILESYM()
++     * extracts an ILE procedure pointer from the
++     * service program activation
++     */
++
++    ILEtarget = (ILEpointer*)ROUND_QUAD(ILEtarget_buf);
++    rc = _ILESYMX(ILEtarget, actmark, "Qc3GenPRNs");
++    if (rc == -1) {
++        printf("QC3GENPRNS _ILESYMX RC=%d\n", errno);
++        return(-102);
++    }
++
++    /*
++     * Save the current PID in static storage so we
++     * can determine when to re-initialize (after fork)
++     */
++    init_pid = getpid();
++    return(0);
++}
++
++/*
++ * Qc3GenPRNs accepts the same arguments and returns
++ * the same result as the ILE procedure it calls with
++ * the addition of an integer return code.. This
++ * method uses a customized or declared structure for the
++ * ILE argument list to improve execution efficiency and
++ * avoid heap storage leaks if an exception or signal occurs
++ */
++int Qc3GenPRNs(void * arg1, int * arg2, char * arg3,
++                char * arg4, void * arg5)
++{
++    int rc;
++/*
++ * "result_type" and "signature" define the function
++ * result type and the sequence and type of all
++ * arguments needed for the ILE procedure identified
++ * by ILEtarget
++ */
++    static result_type_t result_type = RESULT_VOID;
++    static arg_type_t signature[] =
++    {
++        ARG_MEMPTR,
++        ARG_MEMPTR,
++        ARG_MEMPTR,
++        ARG_MEMPTR,
++        ARG_MEMPTR,
++        ARG_END
++    };
++
++/*
++ * ILEarglistSt defines the structure of the ILE argument list.
++ * xlc provides 16-byte (relative) alignment of ILEpointer
++ * member fields because ILEpointer contains a 128-bit long
++ * double member. Explicit pad fields are only needed in
++ * front of structure and union types that do not naturally
++ * fall on ILE-mandated boundaries
++ */
++    typedef struct {
++        ILEarglist_base base;
++        ILEpointer arg1;
++        ILEpointer arg2;
++        ILEpointer arg3;
++        ILEpointer arg4;
++        ILEpointer arg5;
++    } ILEarglistSt;
++
++    /*
++     * xlc does not guarantee 16-byte alignment for
++     * automatic (stack) variables of any type, so we
++     * find an aligned area in an oversized buffer
++     */
++    char ILEarglist_buf[sizeof(ILEarglistSt) + 15];
++    ILEarglistSt *ILEarglist = (ILEarglistSt*)ROUND_QUAD(ILEarglist_buf);
++    /*
++     * Assignment statements are faster than calling
++     * build_ILEarglist()
++     */
++    ILEarglist->arg1.s.addr = (address64_t)arg1;
++    ILEarglist->arg2.s.addr = (address64_t)arg2;
++    ILEarglist->arg3.s.addr = (address64_t)arg3;
++    ILEarglist->arg4.s.addr = (address64_t)arg4;
++    ILEarglist->arg5.s.addr = (address64_t)arg5;
++    /*
++     * Use a saved PID value to check if the ILE pointer
++     * is set. ILE procedure pointers inherited by the
++     * child process of a fork() are not usable because
++     * they point to an ILE activation group in the parent
++     * process
++     */
++    if (getpid() != init_pid)
++        rc = do_i5osprng_init();
++    if (rc == 0) {
++        /*
++         * _ILECALL calls the ILE procedure. The stack may
++         * be unwound, but no heap storage is orphaned if
++         * an exception or signal occurs
++         */
++        rc = _ILECALL(ILEtarget,
++                 &ILEarglist->base,
++                 signature,
++                 result_type);
++    }
++    return(rc);
++}

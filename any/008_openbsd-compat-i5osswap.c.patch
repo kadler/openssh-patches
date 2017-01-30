@@ -1,0 +1,1017 @@
+diff -Nru a/openbsd-compat/i5osswap.c b/openbsd-compat/i5osswap.c
+--- a/openbsd-compat/i5osswap.c	1969-12-31 18:00:00.000000000 -0600
++++ b/openbsd-compat/i5osswap.c	2017-01-30 11:38:35.850962870 -0600
+@@ -0,0 +1,1013 @@
++/* Name:  i5osswap.c
++ *
++ * Wrapers for i5/OS procedures and programs
++ *  QsyGetProfileHandle
++ *  QsyGetProfileHandleNoPwd
++ *  QsySetToProfileHandle
++ *  QsyReleaseProfileHandle
++ *  QWTCHGJB
++ *
++ * Compile with something like:
++ *   xlc -qalign=natural -qldbl128 -o i5osswap i5osswap.c
++ *
++ * The compiler options -qalign=natural and -qldbl128 are
++ * necessary only when interacting with i5/OS ILE programs
++ * to force relative 16-byte alignment of type long double
++ * (used inside type ILEpointer)
++ *
++ */
++#include <pthread.h> /* Must be first header file included */
++#include <nl_types.h>
++#include <locale.h>
++#include <stddef.h>
++#include <stdlib.h>
++#include <stdio.h>
++#include <string.h>
++#include <errno.h>
++#include <iconv.h>
++#include <malloc.h>
++#include <sys/types.h>
++#include <fcntl.h>
++#include <as400_types.h>
++#include <as400_protos.h>
++
++
++#define NOCCSIDOVERRIDE 0  /* Use current PASE CCSID in SETUP routine */
++
++#define CALLILE_FAILED -20001
++#define INIT_FAILED -20002
++#define INPUT_CONVERT_FAILED -20003
++#define OUTPUT_CONVERT_FAILED -20004
++
++/* Carves storage out large enough to align pointers on 16-byte boundary */
++#define BUFFERSIZE(x) \
++(sizeof(x) + sizeof(ILEpointer) - 1)
++
++/* Adjusts pointer to storage to start on 16-byte boundary */
++#define BUFFERADDR(x) \
++((((size_t)(x)) + sizeof(ILEpointer) - 1) & (~(sizeof(ILEpointer) - 1)))
++
++/* Macro to call appropriate routine in ILE */
++#define CALLILE(apiname, rc) \
++{ \
++    rc = _ILECALL(&(export->apiname##_ptr), \
++                  &arglist->base, \
++                  signature, \
++                  result_type); \
++    if (rc != ILECALL_NOERROR) { \
++       fprintf(stderr, "Internal error rc %d calling function %s\n", \
++               rc, #apiname); \
++       rc = CALLILE_FAILED; \
++    } \
++}
++
++/* Macro to ensure thread's environment is setup correctly. */
++/* This must be done before anything else in each routine.  */
++/* Note that successful execution of this macro is what     */
++/* initially sets the rc value to 0.  The rc value is       */
++/* checked in the routines to verify things are OK before   */
++/* continuing on                                            */
++#define SETUP(dataPtr, overRideCCSID, rc) \
++{ \
++    (void)pthread_once(&initLibObject, \
++                          (void (*)(void))initializeLib); \
++    if ((dataPtr=(THREAD_DATA *)pthread_getspecific(threadDataKey))==NULL) { \
++       if ((dataPtr = createThreadData(overRideCCSID)) == NULL) { \
++          fprintf(stderr, "Internal error during thread setup\n"); \
++          rc = INIT_FAILED; \
++       } \
++       else { \
++          rc = 0; \
++       } \
++    } \
++    else { \
++       rc = 0; \
++    } \
++}
++
++
++/* These conversion macros check that the rc provided is 0 before */
++/* actually doing the conversion.  This lets the code using the   */
++/* macro repeatedly call the macro but only check the return code */
++/* at the end of the set of calls.  The first failure will stop   */
++/* all future conversions                                         */
++
++/* Macro to convert an entire structure field.                    */
++/* If the conversion fails, set the rc variable to the failrc     */
++/* that was provided otherwise leave rc alone                     */
++#define CONVERTFIELD(direction, source, destination, rc, failrc) \
++{ \
++  int32 convertfieldrc; \
++  size_t convertfield_sourcesize, convertfield_destsize; \
++  char * convertfield_source; \
++  char * convertfield_dest; \
++  if (rc == 0) { \
++    convertfield_source = (char*)&(source); \
++    convertfield_dest = (char*)&(destination); \
++    convertfield_sourcesize = sizeof(source); \
++    convertfield_destsize = sizeof(destination); \
++    if ((convertfield_source==NULL) || (convertfield_dest==NULL) || (convertfield_sourcesize==0) || (convertfield_destsize==0)) \
++       convertfieldrc = -1; \
++    else \
++       convertfieldrc = iconv(direction, \
++            &convertfield_source, &convertfield_sourcesize, \
++            &convertfield_dest, &convertfield_destsize); \
++    if (convertfieldrc != 0) { \
++       rc = failrc; \
++    } \
++  } \
++}
++
++/* Macro to convert from a given address for the for the provided length. */
++/* If the conversion fails, set the rc variable to the failrc             */
++/* that was provided otherwise leave rc alone                             */
++#define CONVERTLENGTH(direction, source, destination, length, rc, failrc) \
++{ \
++  int32 convertlengthrc; \
++  size_t convertlength_sourcesize, convertlength_destsize; \
++  char * convertlength_source; \
++  char * convertlength_dest; \
++  if (rc == 0) { \
++    convertlength_source = (char*)&(source); \
++    convertlength_dest = (char*)&(destination); \
++    convertlength_sourcesize = length; \
++    convertlength_destsize = length; \
++    if ((convertlength_source==NULL) || (convertlength_dest==NULL) || (length==0)) \
++       convertlengthrc = -1; \
++    else \
++       convertlengthrc = iconv(direction, \
++             &convertlength_source, &convertlength_sourcesize, \
++             &convertlength_dest, &convertlength_destsize); \
++    if (convertlengthrc != 0) { \
++       rc = failrc; \
++    } \
++  } \
++}
++
++/* I5/OS API error code */
++typedef struct Qus_EC {
++   int32  Bytes_Provided;
++   int32  Bytes_Available;
++   char Msg_Id[7];
++   char Reserved;
++    /*char Exception_Data[];*/           /* Varying length        */
++} Qus_EC_t;
++
++/* Thread specific data key */
++static pthread_key_t threadDataKey;
++
++/* The following variables are to ensure the initialization of
++   the library's static data is done correctly. */
++static pthread_once_t initLibObject = PTHREAD_ONCE_INIT;
++static pthread_mutex_t CCSIDmutex = PTHREAD_MUTEX_INITIALIZER;
++static int32 CCSIDInitialized = 0;
++
++/* List of QSYPHANDLE function pointers. */
++
++/*
++ *  Structure of ILE procedure pointers
++ *  from QSYPHANDLE *SRVPGM and also
++ *  QWTCHGJB
++ */
++typedef struct {
++    ILEpointer		QsyGetProfileHandle_ptr;
++    ILEpointer		QsyGetProfileHandleNoPwd_ptr;
++    ILEpointer		QsySetToProfileHandle_ptr;
++    ILEpointer		QsyReleaseProfileHandle_ptr;
++    ILEpointer		QWTCHGJB_ptr;
++} EXPORTSY;
++
++static char exportBuffer[BUFFERSIZE(EXPORTSY)];
++static EXPORTSY *export; /* Ptr to list of function ptrs */
++
++/* PASE (ASCII) and job CCSIDs as well as the character set
++   representation of the CCSIDs. */
++static int32 paseCCSID, jobCCSID;
++static char *charset_ebcdic;
++static char *charset_ascii;
++
++/* The following structures and typedefs describe the thread
++   specific data */
++typedef enum {
++   Buffer1=0,
++   Buffer2,
++   BufferLast      /* Used as marker only.  Always last. */
++} BUFFER_NUM;
++typedef struct {
++   char *      buffer;
++   size_t      bufferLen;
++} TEMP_BUFFER;
++typedef struct {
++   iconv_t cd_ascii_to_ebcdic;
++   iconv_t cd_ebcdic_to_ascii;
++   TEMP_BUFFER tempBuffers[BufferLast];
++} THREAD_DATA;
++
++
++/*********************************************************************/
++/* Function name: threadDataDtor                                     */
++/*                                                                   */
++/* Purpose: This routine will be called at thread termination time   */
++/*     only if the thread specific data (threadKeyData parm) is      */
++/*     not NULL.  Note that if an exit is processed or some          */
++/*     other action occurs that terminates the process then the      */
++/*     destructor routine will not be called but that's ok as        */
++/*     process termination will return storage we malloc'd to        */
++/*     the heap and free conversion descriptors.                     */
++/*                                                                   */
++/*********************************************************************/
++static void threadDataDtor(void *threadKeyData)
++{
++   THREAD_DATA *dataPtr = (THREAD_DATA *)threadKeyData;
++   int32 i;
++
++   /* Cleanup all temporary buffers */
++   for (i = Buffer1; i < BufferLast; i++) {
++      if (dataPtr->tempBuffers[i].buffer != NULL) {
++         free(dataPtr->tempBuffers[i].buffer);
++      }
++   }
++
++   /* Close any open conversion descriptors. */
++   if (dataPtr->cd_ascii_to_ebcdic != (iconv_t)-1)
++      (void)iconv_close(dataPtr->cd_ascii_to_ebcdic);
++   if (dataPtr->cd_ebcdic_to_ascii != (iconv_t)-1)
++      (void)iconv_close(dataPtr->cd_ebcdic_to_ascii);
++
++   free(dataPtr); /* LAST: Cleanup thread specific storage. */
++
++} /* threadDataDtor */
++
++/*********************************************************************/
++/* Function name: initializePtrs                                     */
++/*                                                                   */
++/* Purpose: This routine initializes the pointers to the QSYPHANDLE  */
++/*     routines.  It is also the target routine for the child        */
++/*     fork handler.  The reason why the initialization of           */
++/*     the pointers is done this way is to ensure that they are      */
++/*     refreshed if a child process is fork()'d otherwise the        */
++/*     pointers would not be valid in the child process.  That       */
++/*     is why this routine is the child process' fork handler.       */
++/*                                                                   */
++/*********************************************************************/
++static void initializePtrs(void)
++{
++   unsigned long long actMark;
++   int32 rc;
++
++   /* Exported procedure for returning tape function pointers
++      This procedure is in service program QSYS/QP2TA. */
++   export = (EXPORTSY *)BUFFERADDR(exportBuffer);
++
++   /* Load the QSYPHANDLE service program and extract the
++      procedure pointers from it */
++
++   actMark = _ILELOADX("QSYS/QSYPHANDLE", ILELOAD_LIBOBJ);
++   if (actMark == -1) {
++      fprintf(stderr, "Internal error in i5osswap loading service program QSYS/QSYPHANDLE\n");
++      abort(); /* Severe error */
++   }
++
++   rc = _ILESYMX(&(export->QsyGetProfileHandle_ptr), actMark, "QsyGetProfileHandle");
++   if (rc == -1) {
++      fprintf(stderr, "Internal error in i5osswap resolving to procedure QsyGetProfileHandle in service program QSYS/QSYPHANDLE\n");
++      abort(); /* Severe error */
++   }
++
++   rc = _ILESYMX(&(export->QsyGetProfileHandleNoPwd_ptr), actMark, "QsyGetProfileHandleNoPwd");
++   if (rc == -1) {
++      fprintf(stderr, "Internal error in i5osswap resolving to procedure QsyGetProfileHandleNoPwd in service program QSYS/QSYPHANDLE\n");
++      abort(); /* Severe error */
++   }
++
++   rc = _ILESYMX(&(export->QsySetToProfileHandle_ptr), actMark, "QsySetToProfileHandle");
++   if (rc == -1) {
++      fprintf(stderr, "Internal error in i5osswap resolving to procedure QsySetToProfileHandle in service program QSYS/QSYPHANDLE\n");
++      abort(); /* Severe error */
++   }
++
++   rc = _ILESYMX(&(export->QsyReleaseProfileHandle_ptr), actMark, "QsyReleaseProfileHandle");
++   if (rc == -1) {
++      fprintf(stderr, "Internal error in i5osswap resolving to procedure QsyReleaseProfileHandle in service program QSYS/QSYPHANDLE\n");
++      abort(); /* Severe error */
++   }
++
++   rc = _RSLOBJ2(&(export->QWTCHGJB_ptr), RSLOBJ_TS_PGM, "QWTCHGJB", "QSYS");
++   if (rc == -1) {
++      fprintf(stderr, "Internal error in i5osswap resolving to QWTCHGJB functions\n");
++      abort(); /* Severe error */
++   }
++
++} /* initializePtrs */
++
++
++
++/*********************************************************************/
++/* Function name: initializeLib                                      */
++/*                                                                   */
++/* Purpose: This routine initializes the shared library and sets up  */
++/*     child fork handler if a process where this shared library     */
++/*     is linked into fork()'s a child process.  This routine        */
++/*     is guaranteed to be called at most once per process as        */
++/*     it is the initialization routine associated with the one      */
++/*     time initialization object "initLibObject".                   */
++/*                                                                   */
++/*********************************************************************/
++static void initializeLib(void)
++{
++   initializePtrs(); /* Initialize QSYPHANDLE function pointers. */
++
++   /* Create thread specific data key, specifiying threadDataDtor
++      as the destructor routine associated with this key to be
++      called to cleanup thread specific storage when a thread
++      terminates. */
++
++   (void)pthread_key_create(&threadDataKey,
++                            (void (*)(void *))threadDataDtor);
++
++   /* Register a child fork handler to ensure necessary library
++      initialization is done if a child process is fork()'d. */
++
++   (void)pthread_atfork(NULL, NULL, (void (*)(void))initializePtrs);
++
++} /* initializeLib */
++
++
++/*********************************************************************/
++/* Function name: openConverters                                     */
++/*                                                                   */
++/* Purpose: This routine opens up the converters associated the char */
++/*     strings charset_ebcdic and charset_ascii.  It is up to        */
++/*     the calling routine to ensure these strings are setup         */
++/*     prior to calling openConverters.  The resulting               */
++/*     conversion descriptors will be returned back in the           */
++/*     arguments passed into this routine.    If a converter         */
++/*     could not be opened for some reason, this routine will        */
++/*     ensure all converters are closed and a -1 will be             */
++/*     returned to the caller.  Otherwise, both converters will      */
++/*     be open and 0 will be returned to the caller.  It is up       */
++/*     to the caller to ensure the converters are closed at the      */
++/*     appropriate time if 0 is returned.                            */
++/*                                                                   */
++/*********************************************************************/
++static int32 openConverters(iconv_t *asciiToEbcdic, iconv_t *ebcdicToAscii)
++{
++   int32 returnCode = 0;
++
++   /* Open up the conversion descriptors using the global character
++      set strings that were established previously.  Any failures
++      will result in closing any open converters and returning a
++      value of -1 to the caller. */
++
++   *asciiToEbcdic = iconv_open(charset_ebcdic, charset_ascii);
++   if (*asciiToEbcdic != (iconv_t)-1) {
++      *ebcdicToAscii = iconv_open(charset_ascii, charset_ebcdic);
++      if (*ebcdicToAscii == (iconv_t)-1) {
++         (void)iconv_close(*asciiToEbcdic);
++         returnCode = -1;
++      }
++   }
++   else {
++      returnCode = -1;
++   }
++
++   if (returnCode == -1) { /* Send error message if converters not open */
++      fprintf(stderr, "Cannot convert between code set %s (CCSID %i) and code set %s (CCSID %i)\n",
++              charset_ascii,
++              paseCCSID,
++              charset_ebcdic,
++              jobCCSID
++             ); /* @04C*/
++   }
++
++   return returnCode;
++} /* openConverters */
++
++
++/*********************************************************************/
++/* Function name: createThreadData                                   */
++/*                                                                   */
++/* Purpose: This routine malloc's storage for the thread specific    */
++/*     data, initializes the storage, hangs if off of the            */
++/*     thread's data key and returns a pointer to it to the          */
++/*     calling routine.  It is up to the caller to determine         */
++/*     if this thread already has thread specific data               */
++/*     before this routine is invoked (ie., use the SETUP()          */
++/*     macro) as this routine does NOT check for this.  Note         */
++/*     that the storage referenced by the returned pointer is        */
++/*     NOT owned by the caller (ie., the caller should NEVER         */
++/*     free this storage).                                           */
++/*                                                                   */
++/*********************************************************************/
++static THREAD_DATA *createThreadData(int32 overRideCCSID)
++{
++   THREAD_DATA *dataPtr;
++   iconv_t asciiToEbcdic, ebcdicToAscii;
++   int32 i;
++
++
++   /* Lock the CCSID mutex before using static vars
++      paseCCSID, charset_ascii and charset_ebcdic */
++   pthread_mutex_lock(&CCSIDmutex);
++   /* First make sure the pase and job CCSIDs can be successfully
++      converted between each other.  If they can't, don't create
++      any thread specific data since we want to allow the user to
++      try again. Basically the first thread in the process that
++      can successfully setup the conversions imposes that pase
++      CCSID on all other threads. */
++   if (!CCSIDInitialized) {
++      /* Get PASE CCSID and job CCSID and convert
++         PASE and job CCSID to character set format that
++         iconv_open() requires.  We'll store the CCSID's
++         and character set format in static storage for easy
++         retrieval in later processing. */
++
++      paseCCSID = (overRideCCSID == 0) ? Qp2paseCCSID() : overRideCCSID; /* @01C*/
++      jobCCSID = Qp2jobCCSID(); /* @01A*/
++      charset_ascii = ccsidtocs((CCSID)paseCCSID); /* CCSID to char set */
++      charset_ebcdic = ccsidtocs((CCSID)jobCCSID); /* CCSID to char set */
++
++      /* Try to open the converters. */
++      if (openConverters(&asciiToEbcdic, &ebcdicToAscii) == 0) {
++         CCSIDInitialized = 1; /* Indicate CCSIDs initialized. */
++         pthread_mutex_unlock(&CCSIDmutex);
++      }
++      else { /* Failed to open converters */
++         pthread_mutex_unlock(&CCSIDmutex);
++         return NULL;
++      }
++   } /* !CCSIDInitialized -- need to get paseCCSID */
++   else { /* CCSIDInitialized -- paseCCSID set by another thread so just open converters */
++      pthread_mutex_unlock(&CCSIDmutex);
++      if (openConverters(&asciiToEbcdic, &ebcdicToAscii) == -1)
++         /* this should not happen since we wouldn't have set
++            CCSIDInitialized to TRUE unless the first
++            openConverters call was successful... */
++         return NULL;
++   }
++
++   /* Converters are now open.  malloc enough storage to contain
++      the thread specific data and set it in the thread. */
++
++   dataPtr = (THREAD_DATA *)malloc(sizeof(THREAD_DATA));
++
++   if (dataPtr == NULL) { /* malloc() failed */
++      return dataPtr;
++   }
++
++   /* Initialize the temporary buffer storage tracking information */
++   for (i = Buffer1; i < BufferLast; i++) {
++      dataPtr->tempBuffers[i].bufferLen = 0;
++      dataPtr->tempBuffers[i].buffer = NULL;
++   }
++
++   /* Store the conversion descriptors away so we can
++      call iconv() services later. */
++   dataPtr->cd_ascii_to_ebcdic = asciiToEbcdic;
++   dataPtr->cd_ebcdic_to_ascii = ebcdicToAscii;
++
++   /* Save the pointer to the data for this thread */
++   (void)pthread_setspecific(threadDataKey, (const void *)dataPtr);
++
++   return dataPtr; /* Caller does NOT own (free'd by threadDataDtor) */
++} /* createThreadData */
++
++
++/*********************************************************************/
++/* Function name: allocateBuffer                                     */
++/*                                                                   */
++/* Purpose: This routine returns a pointer to malloc'd storage       */
++/*     that will be tracked in the thread specific data and          */
++/*     freed by the thread destructor.  The caller should            */
++/*     never free this storage                                       */
++/*                                                                   */
++/*********************************************************************/
++static char *allocateBuffer(BUFFER_NUM bufferNumber,
++                            size_t  bufferSize,
++                            THREAD_DATA *dataPtr)
++{
++   /* Check if buffer has been allocated already and is big enough */
++   if (dataPtr->tempBuffers[bufferNumber].buffer == NULL) { /* Not allocated yet */
++      dataPtr->tempBuffers[bufferNumber].buffer = (char *)malloc(bufferSize);
++      if (dataPtr->tempBuffers[bufferNumber].buffer == NULL) { /* malloc failed */
++         return NULL;
++      } /* malloc failed */
++      else { /* malloc worked - remember how big this buffer is */
++         dataPtr->tempBuffers[bufferNumber].bufferLen = bufferSize;
++      } /* malloc worked */
++   } /* buffer not allocated yet */
++   else if (dataPtr->tempBuffers[bufferNumber].bufferLen < bufferSize) { /* too small */
++      free(dataPtr->tempBuffers[bufferNumber].buffer);
++      dataPtr->tempBuffers[bufferNumber].buffer = (char *)malloc(bufferSize);
++      if (dataPtr->tempBuffers[bufferNumber].buffer == NULL) { /* malloc failed */
++         return NULL;
++      } /* malloc failed */
++      else { /* malloc worked - remember how big this buffer is */
++         dataPtr->tempBuffers[bufferNumber].bufferLen = bufferSize;
++      } /* malloc worked */
++   } /* buffer already allocated */
++   else; /* buffer already allocated and is large enough */
++   return dataPtr->tempBuffers[bufferNumber].buffer;
++}
++
++/*********************************************************************/
++/*                                                                   */
++/* Start of wrapper routines                                         */
++/*                                                                   */
++/*********************************************************************/
++
++/*********************************************************************/
++/* Each of these routines follows a flow generally like so:          */
++/*                                                                   */
++/* 1) Call the SETUP macro to verify the environment is setup        */
++/* 2) (if input or output parms are variable length and contain      */
++/*    character data) allocate temporary buffers of equal size       */
++/*    as the parms provided                                          */
++/* 3) Convert ASCII input parms/fields into EBCDIC placing the       */
++/*    EBCDIC output into temporary parm buffers                      */
++/* 4) (if there are binary fields in a parm structure containing     */
++/*    character data) copy the binary fields from the input parm     */
++/*    to the temporary parm structure                                */
++/* 5) Setup the argument list to call the ILE routine.  Pure binary  */
++/*    arguments point to the parms provided, arguments with          */
++/*    character data point to temporary parms with the EBCDIC        */
++/*    values                                                         */
++/* 6) Call the ILE routine                                           */
++/* 7) (if there is character data in the output) convert the         */
++/*    character data from EBCDIC to ASCII                            */
++/*********************************************************************/
++
++
++/*********************************************************************/
++/* Function name: OverrideCCSID400                                   */
++/*                                                                   */
++/* Purpose: This routine should be called by the application prior   */
++/*     to any other QSYx routine to override the ascii ccsid         */
++/*     being retrieved from the Qp2RunPase() routine.  If this       */
++/*     routine is called after any QtaSPI routine is called in       */
++/*     the process it will have no effect.                           */
++/*                                                                   */
++/*********************************************************************/
++int32 QsyOverrideCCSID400(int32 newCCSID)
++{
++   THREAD_DATA *dataPtr;
++   int32 rc; /* SETUP return code */
++
++   SETUP(dataPtr, newCCSID, rc); /* Ensure env is setup correctly. */
++
++   return rc; /* Return the SETUP return code */
++} /* OverrideCCSID400 */
++
++/*********************************************************************/
++/* Function name: QsyGetProfileHandle                                */
++/*********************************************************************/
++int32 QsyGetProfileHandle(unsigned char * arg1, /* profile handle */
++                         const char * arg2, /* user profile name */
++                         const char * arg3, /* user profile password */
++                         const int32  arg4, /* length of password */
++                         const uint32 arg5, /* ccsid of password */
++                         void * arg6) /* error code */
++{
++   /* argument list type for QsyGetProfileHandle */
++   typedef struct {
++      ILEarglist_base base;
++      ILEpointer arg1;
++      ILEpointer arg2;
++      ILEpointer arg3;
++      int32      arg4;
++      uint32     arg5;
++      ILEpointer arg6;
++   } arglist_t;
++
++   /* signature for QsyGetProfileHandle */
++   static arg_type_t signature[] = {
++      ARG_MEMPTR, /* unsigned char * profile handle */
++      ARG_MEMPTR, /* char * user profile name */
++      ARG_MEMPTR, /* char * user profile password */
++      ARG_INT32,  /* int length of password */
++      ARG_UINT32, /* CCSID of password */
++      ARG_MEMPTR, /* void * error code */
++      ARG_END
++   };
++
++   /* API error code */
++   Qus_EC_t * errorCode;
++
++   /* result type for QsyGetProfileHandle */
++   static result_type_t result_type = RESULT_VOID;
++
++   char buffer[BUFFERSIZE(arglist_t)];
++   arglist_t *arglist = (arglist_t*)BUFFERADDR(buffer);
++   int32 i; /* loop counter */
++   char upperArg2[10];
++   char ebcdicArg2[10];
++   char asciiMsg_Id[7];
++   THREAD_DATA *dataPtr;
++   int32 rc; /* SETUP and CALLILE return code */
++
++   SETUP(dataPtr, NOCCSIDOVERRIDE, rc); /* Ensure environment is setup */
++
++   if (rc == 0) { /* SETUP worked so continue */
++      /* Uppercase and extend profile name to 10 chars */
++      for(i=0; i<sizeof(upperArg2); i++) {
++         if (i <= strlen(arg2))
++            upperArg2[i]=toupper(arg2[i]);
++         else
++            upperArg2[i]=' ';
++      }
++      /* Convert ascii profile name to ebcdic */
++      CONVERTLENGTH(dataPtr->cd_ascii_to_ebcdic, upperArg2, ebcdicArg2, sizeof(ebcdicArg2), rc, INPUT_CONVERT_FAILED);
++   }
++
++   if (rc == 0) { /* CONVERTs worked so continue */
++      /* Set arguments */
++      arglist->arg1.s.addr = (address64_t)arg1;
++      arglist->arg2.s.addr = (address64_t)ebcdicArg2;
++      arglist->arg3.s.addr = (address64_t)arg3;
++      arglist->arg4 = arg4;
++      /* If CCSID is zero use paseCCSID (ASCII) instead otherwise the real SY code will use
++         jobCCSID (EBCDIC) */
++      if (arg5 != 0)
++         arglist->arg5 = arg5;
++      else
++         arglist->arg5 = paseCCSID;
++      arglist->arg6.s.addr = (address64_t)arg6;
++
++      /* Call the function */
++      CALLILE(QsyGetProfileHandle, rc);
++   } /* Setup worked */
++
++   if (rc == 0) { /* CALLILE worked so continue */
++      errorCode = (Qus_EC_t*)arg6;
++      if (errorCode->Bytes_Provided >= (sizeof(Qus_EC_t)-1)) {
++          if (errorCode->Bytes_Available >= (sizeof(Qus_EC_t)-1)) {
++            CONVERTLENGTH(dataPtr->cd_ebcdic_to_ascii, errorCode->Msg_Id, asciiMsg_Id,
++                           sizeof(asciiMsg_Id), rc, OUTPUT_CONVERT_FAILED);
++            memcpy(errorCode->Msg_Id, asciiMsg_Id, sizeof(asciiMsg_Id));
++            rc = -1;
++          }
++          else {
++            memset(errorCode->Msg_Id, ' ', sizeof(asciiMsg_Id));
++          }
++      } /* Bytes_Provided >= sizeof(Qus_EC_t) */
++   } /* CALLILE worked */
++
++   return rc;
++
++} /* QsyGetProfileHandle */
++
++/*********************************************************************/
++/* Function name: QsyGetProfileHandleNoPwd                           */
++/*********************************************************************/
++int32 QsyGetProfileHandleNoPwd(unsigned char * arg1, /* profile handle */
++                         const char * arg2, /* user profile name */
++                         const char * arg3, /* password special value */
++                         void * arg4) /* error code */
++{
++   /* argument list type for QsyGetProfileHandleNoPwd */
++   typedef struct {
++      ILEarglist_base base;
++      ILEpointer arg1;
++      ILEpointer arg2;
++      ILEpointer arg3;
++      ILEpointer arg4;
++   } arglist_t;
++
++   /* signature for QsyGetProfileHandleNoPwd */
++   static arg_type_t signature[] = {
++      ARG_MEMPTR, /* unsigned char * profile handle */
++      ARG_MEMPTR, /* char * user profile name */
++      ARG_MEMPTR, /* char * user profile password */
++      ARG_MEMPTR, /* void * error code */
++      ARG_END
++   };
++
++   /* API error code */
++   Qus_EC_t * errorCode;
++
++   /* result type for QsyGetProfileHandleNoPwd */
++   static result_type_t result_type = RESULT_VOID;
++
++   char buffer[BUFFERSIZE(arglist_t)];
++   arglist_t *arglist = (arglist_t*)BUFFERADDR(buffer);
++   int32 i; /* loop counter */
++   char upperArg2[10];
++   char ebcdicArg2[10];
++   char ebcdicArg3[10];
++   char asciiMsg_Id[7];
++   THREAD_DATA *dataPtr;
++   int32 rc; /* SETUP and CALLILE return code */
++
++   SETUP(dataPtr, NOCCSIDOVERRIDE, rc); /* Ensure environment is setup */
++
++   if (rc == 0) { /* SETUP worked so continue */
++      /* Uppercase and extend profile name to 10 chars */
++      for(i=0; i<sizeof(upperArg2); i++) {
++         if (i <= strlen(arg2))
++            upperArg2[i]=toupper(arg2[i]);
++         else
++            upperArg2[i]=' ';
++      }
++
++      /* Convert ascii profile name to ebcdic */
++      CONVERTLENGTH(dataPtr->cd_ascii_to_ebcdic, upperArg2, ebcdicArg2, sizeof(ebcdicArg2), rc, INPUT_CONVERT_FAILED);
++      /* Convert ascii password special value to ebcdic */
++      CONVERTLENGTH(dataPtr->cd_ascii_to_ebcdic, *arg3, ebcdicArg3, sizeof(ebcdicArg3), rc, INPUT_CONVERT_FAILED);
++   }
++
++   if (rc == 0) { /* CONVERTs worked so continue */
++      /* Set arguments */
++      arglist->arg1.s.addr = (address64_t)arg1;
++      arglist->arg2.s.addr = (address64_t)ebcdicArg2;
++      arglist->arg3.s.addr = (address64_t)ebcdicArg3;
++      arglist->arg4.s.addr = (address64_t)arg4;
++
++      /* Call the function */
++      CALLILE(QsyGetProfileHandleNoPwd, rc);
++   } /* Setup worked */
++
++   if (rc == 0) { /* CALLILE worked so continue */
++      errorCode = (Qus_EC_t*)arg4;
++      if (errorCode->Bytes_Provided >= (sizeof(Qus_EC_t)-1)) {
++          if (errorCode->Bytes_Available >= (sizeof(Qus_EC_t)-1)) {
++            CONVERTLENGTH(dataPtr->cd_ebcdic_to_ascii, errorCode->Msg_Id, asciiMsg_Id,
++                           sizeof(asciiMsg_Id), rc, OUTPUT_CONVERT_FAILED);
++            memcpy(errorCode->Msg_Id, asciiMsg_Id, sizeof(asciiMsg_Id));
++            rc = -1;
++          }
++          else {
++            memset(errorCode->Msg_Id, ' ', sizeof(asciiMsg_Id));
++          }
++      } /* Bytes_Provided >= sizeof(Qus_EC_t) */
++   } /* CALLILE worked */
++
++   return rc;
++
++} /* QsyGetProfileHandleNoPwd */
++
++/*********************************************************************/
++/* Function name: QsySetToProfileHandle                           */
++/*********************************************************************/
++int32 QsySetToProfileHandle(unsigned char * arg1, /* profile handle */
++                         void * arg2) /* error code */
++{
++   /* argument list type for QsySetToProfileHandle */
++   typedef struct {
++      ILEarglist_base base;
++      ILEpointer arg1;
++      ILEpointer arg2;
++   } arglist_t;
++
++   /* signature for QsySetToProfileHandle */
++   static arg_type_t signature[] = {
++      ARG_MEMPTR, /* unsigned char * profile handle */
++      ARG_MEMPTR, /* char * user profile name */
++      ARG_END
++   };
++
++   /* API error code */
++   Qus_EC_t * errorCode;
++
++   /* result type for QsySetToProfileHandle */
++   static result_type_t result_type = RESULT_VOID;
++
++   char buffer[BUFFERSIZE(arglist_t)];
++   arglist_t *arglist = (arglist_t*)BUFFERADDR(buffer);
++   char asciiMsg_Id[7];
++   THREAD_DATA *dataPtr;
++   int32 rc; /* SETUP and CALLILE return code */
++
++   SETUP(dataPtr, NOCCSIDOVERRIDE, rc); /* Ensure environment is setup */
++
++   if (rc == 0) { /* SETUP worked so continue */
++      /* Set arguments */
++      arglist->arg1.s.addr = (address64_t)arg1;
++      arglist->arg2.s.addr = (address64_t)arg2;
++
++      /* Call the function */
++      CALLILE(QsySetToProfileHandle, rc);
++   } /* Setup worked */
++
++   if (rc == 0) { /* CALLILE worked so continue */
++      errorCode = (Qus_EC_t*)arg2;
++      if (errorCode->Bytes_Provided >= (sizeof(Qus_EC_t)-1)) {
++          if (errorCode->Bytes_Available >= (sizeof(Qus_EC_t)-1)) {
++            CONVERTLENGTH(dataPtr->cd_ebcdic_to_ascii, errorCode->Msg_Id, asciiMsg_Id,
++                           sizeof(asciiMsg_Id), rc, OUTPUT_CONVERT_FAILED);
++            memcpy(errorCode->Msg_Id, asciiMsg_Id, sizeof(asciiMsg_Id));
++            rc = -1;
++          }
++          else {
++            memset(errorCode->Msg_Id, ' ', sizeof(asciiMsg_Id));
++          }
++      } /* Bytes_Provided >= sizeof(Qus_EC_t) */
++   } /* CALLILE worked */
++
++   return rc;
++
++} /* QsySetToProfileHandle */
++
++/*********************************************************************/
++/* Function name: QsyReleaseProfileHandle                           */
++/*********************************************************************/
++int32 QsyReleaseProfileHandle(unsigned char * arg1, /* profile handle */
++                         void * arg2) /* error code */
++{
++   /* argument list type for QsyReleaseProfileHandle */
++   typedef struct {
++      ILEarglist_base base;
++      ILEpointer arg1;
++      ILEpointer arg2;
++   } arglist_t;
++
++   /* signature for QsyReleaseProfileHandle */
++   static arg_type_t signature[] = {
++      ARG_MEMPTR, /* unsigned char * profile handle */
++      ARG_MEMPTR, /* char * user profile name */
++      ARG_END
++   };
++
++   /* API error code */
++   Qus_EC_t * errorCode;
++
++   /* result type for QsyReleaseProfileHandle */
++   static result_type_t result_type = RESULT_VOID;
++
++   char buffer[BUFFERSIZE(arglist_t)];
++   arglist_t *arglist = (arglist_t*)BUFFERADDR(buffer);
++   char asciiMsg_Id[7];
++   THREAD_DATA *dataPtr;
++   int32 rc; /* SETUP and CALLILE return code */
++
++   SETUP(dataPtr, NOCCSIDOVERRIDE, rc); /* Ensure environment is setup */
++
++   if (rc == 0) { /* SETUP worked so continue */
++      /* Set arguments */
++      arglist->arg1.s.addr = (address64_t)arg1;
++      arglist->arg2.s.addr = (address64_t)arg2;
++
++      /* Call the function */
++      CALLILE(QsyReleaseProfileHandle, rc);
++   } /* Setup worked */
++
++   if (rc == 0) { /* CALLILE worked so continue */
++      errorCode = (Qus_EC_t*)arg2;
++      if (errorCode->Bytes_Provided >= (sizeof(Qus_EC_t)-1)) {
++          if (errorCode->Bytes_Available >= (sizeof(Qus_EC_t)-1)) {
++            CONVERTLENGTH(dataPtr->cd_ebcdic_to_ascii, errorCode->Msg_Id, asciiMsg_Id,
++                           sizeof(asciiMsg_Id), rc, OUTPUT_CONVERT_FAILED);
++            memcpy(errorCode->Msg_Id, asciiMsg_Id, sizeof(asciiMsg_Id));
++            rc = -1;
++          }
++          else {
++            memset(errorCode->Msg_Id, ' ', sizeof(asciiMsg_Id));
++          }
++      } /* Bytes_Provided >= sizeof(Qus_EC_t) */
++   } /* CALLILE worked */
++
++   return rc;
++
++} /* QsyReleaseProfileHandle */
++
++/*********************************************************************/
++/* Function name: QWTCHGJB                                           */
++/*                                                                   */
++/* This implementation is not a generic call, but rather hardcoded   */
++/* to do one of two things (based on the "reason" value):            */
++/* 1 == change the server name to SSHD                               */
++/* 2 == change the attributes of the job to match current user       */
++/*       after swap                                                  */
++/*********************************************************************/
++int32 QWTCHGJB(int32 reason, void * arg2)
++{
++   THREAD_DATA *dataPtr;
++
++   /* qwtchgjb_argv is the array of argument pointers to QWTCHGJB */
++   void *qwtchgjb_argv[6];
++
++   /* jobname is "*                         " in EBCDIC */
++   char jobName[26] = { 0x5c, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40,
++                        0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40,
++                        0x40, 0x40, 0x40, 0x40, 0x40, 0x40 };
++   /* jobid is "                " in EBCDIC */
++   char jobId[16] = { 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40,
++                      0x40, 0x40, 0x40, 0x40, 0x40, 0x40 };
++   /* jobc0200 is "JOBC0200" in EBCDIC */
++   char jobc0200[8] = { 0xd1, 0xd6, 0xc2, 0xc3, 0xf0, 0xf2, 0xf0, 0xf0 };
++
++   typedef struct jobc0200ChangeInfo {
++     int32 numRec;
++     int32 recLen;
++     int32 keyNum;
++     char dataType[4];
++     int32 dataLen;
++     char dataChar[30];
++   } jobc0200ChangeInfo_t;
++
++   jobc0200ChangeInfo_t reason1ChangeInfo = {
++       1, /* numRec = 1 */
++       46, /* recLen is sizeof recLen, keyNum, dataType, dataLen, dataChar */
++       1911, /* keyNum = 1911 = Server type */
++       0xc3, 0x40, 0x40, 0x40, /* dataType is "C   " in EBCDIC */
++       30, /* dataLen is sizeof(dataChar) */
++       /* dataChar is "QIBM_SSHD                     " in EBCDIC */
++        0xd8, 0xc9, 0xc2, 0xd4, 0x6d, 0xe2, 0xe2, 0xc8, 0xc4, 0x40,
++        0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40,
++        0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40
++   };
++
++   /* jobc0300 is "JOBC0300" in EBCDIC */
++   char jobc0300[8] = { 0xd1, 0xd6, 0xc2, 0xc3, 0xf0, 0xf3, 0xf0, 0xf0 };
++
++   typedef struct jobc0300ChangeInfo {
++     int32 numRec;
++     int32 keyNum;
++     char dataChar[12]; /* 10 chars data plus 2 chars reserved */
++   } jobc0300ChangeInfo_t;
++
++   jobc0300ChangeInfo_t reason2ChangeInfo = {
++       1, /* numRec = 1 */
++       2701, /* keyNum = 2701 = All JOBC0300 keys */
++       /* dataChar is "*CURUSR     " in EBCDIC */
++       0x5c, 0xc3, 0xe4, 0xd9, 0xe4, 0xe2, 0xd9, 0x40, 0x40, 0x40,
++       0x40, 0x40
++   };
++
++   /* API error code */
++   Qus_EC_t * errorCode;
++
++   char asciiMsg_Id[7];
++   int32 rc; /* SETUP and _PGMCALL return code */
++
++   SETUP(dataPtr, NOCCSIDOVERRIDE, rc); /* Ensure environment is setup */
++
++   if (rc == 0) { /* SETUP worked so continue */
++      errorCode = (Qus_EC_t*)arg2;
++      /* Set arguments */
++      qwtchgjb_argv[0] = &jobName;
++      qwtchgjb_argv[1] = &jobId;
++      switch(reason) {
++      case 1:
++          qwtchgjb_argv[2] = &jobc0200;
++          qwtchgjb_argv[3] = &reason1ChangeInfo;
++          break;
++      case 2:
++          qwtchgjb_argv[2] = &jobc0300;
++          qwtchgjb_argv[3] = &reason2ChangeInfo;
++          break;
++      default:
++          debug("QWTCHGJB: invalid reason %d", reason);
++          return(-1);
++      }
++      qwtchgjb_argv[4] = errorCode;
++      qwtchgjb_argv[5] = NULL;
++
++      /* Call the program */
++      rc = _PGMCALL(&(export->QWTCHGJB_ptr), (void**)&qwtchgjb_argv, 0);
++   } /* Setup worked */
++
++   if (rc == 0) { /* _PGMCALL worked so continue */
++       if (errorCode->Bytes_Provided >= (sizeof(Qus_EC_t)-1)) {
++           if (errorCode->Bytes_Available >= (sizeof(Qus_EC_t)-1)) {
++             CONVERTLENGTH(dataPtr->cd_ebcdic_to_ascii, errorCode->Msg_Id, asciiMsg_Id,
++                            sizeof(asciiMsg_Id), rc, OUTPUT_CONVERT_FAILED);
++             memcpy(errorCode->Msg_Id, asciiMsg_Id, sizeof(asciiMsg_Id));
++         rc = -1;
++      }
++           else {
++             memset(errorCode->Msg_Id, ' ', sizeof(asciiMsg_Id));
++           }
++       } /* Bytes_Provided >= sizeof(Qus_EC_t) */
++   } /* _PGMCALL worked */
++
++   return rc;
++
++} /* QWTCHGJB */
++
++/*
++ * record_failed_login: record audit entry for failed login
++ */
++void
++record_failed_login(const char *user, const char *hostname, const char *ttyname)
++{
++    int32 rc;
++    struct {
++        int32 bytesProvided;
++        int32 bytesAvailable;
++        char msgID[7];
++        char reserved;
++    } errorCode;
++    char profileHandle[12];
++    const char * password = " ";
++    errorCode.bytesProvided=sizeof(errorCode);
++    errorCode.bytesAvailable = 0;
++    rc = QsyGetProfileHandle(profileHandle, user, password, strlen(password), 0, &errorCode);
++    debug("record_failed_login:  GetPH user=%s rc=%d avail=%d msgid=%.7s",
++          user, rc, errorCode.bytesAvailable, errorCode.msgID);
++    if(rc==0) { /* should never happen */
++        rc = QsyReleaseProfileHandle(profileHandle, &errorCode);
++        debug("record_failed_login:  ReleasePH rc=%d avail=%d msgid=%.7s",
++              rc, errorCode.bytesAvailable, errorCode.msgID);
++    }
++    return;
++}

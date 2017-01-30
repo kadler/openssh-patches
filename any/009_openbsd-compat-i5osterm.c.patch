@@ -1,0 +1,259 @@
+diff -Nru a/openbsd-compat/i5osterm.c b/openbsd-compat/i5osterm.c
+--- a/openbsd-compat/i5osterm.c	1969-12-31 18:00:00.000000000 -0600
++++ b/openbsd-compat/i5osterm.c	2017-01-30 11:38:56.231035488 -0600
+@@ -0,0 +1,255 @@
++/* Name:  ssh-askpass.c
++ *
++ * Obtain ssh password
++ * Control echo of generic terminal (call qp2term)
++ *
++ * Compile with something like:
++ *   xlc -qalign=natural -qldbl128 -o ssh-askpass ssh-askpass.c
++ *
++ * The compiler options -qalign=natural and -qldbl128 are
++ * necessary only when interacting with OS/400 ILE programs
++ * to force relative 16-byte alignment of type long double
++ * (used inside type ILEpointer)
++ *
++ */
++
++#include <stdlib.h>
++#include <stdio.h>
++#include <errno.h>
++#include <malloc.h>
++#include <signal.h>
++#include <sys/types.h>
++#include <as400_types.h>
++#include <as400_protos.h>
++
++/* Values for Qp0zSetTerminalMode() - from qp0ztrml.h */
++#define QP0Z_TERMINAL_INPUT_MODE  0x01 /* Set input mode @B2A*/
++#define QP0Z_TERMINAL_HIDDEN      0xBD /* Set hidden input mode @B2A*/
++#define QP0Z_TERMINAL_NORMAL      0xBE /* Set normal input mode @B2A*/
++#define QP0Z_TERMINAL_PREVIOUS    0x49 /* Set previous mode @B2A*/
++
++/*
++ * init_pid saves the process id (PID) of the process that
++ * extracted the ILE procedure pointers.
++ * init_pid is initialized to a value that is not a
++ * valid PID to force initialization on the first
++ * reference after the exec() of this program
++ *
++ * If your code uses pthread interfaces, you can
++ * alternatively provide a handler registered using
++ * pthread_atfork() to re-initialize ILE procedure
++ * pointers in the child process and use a pointer or
++ * flag in static storage to force reinitialization
++ * after exec()
++ */
++
++pid_t  init_pid = -1;
++ILEpointer *Qp0zSetTerminalMode_ILE;  /* pointer to ILE procedure Qp0zSetTerminalMode */
++ILEpointer *Qp0zIsATerminal_ILE;  /* pointer to ILE procedure Qp0zIsATerminal */
++
++/*
++ * ROUND_QUAD finds a 16-byte aligned memory
++ * location at or beyond a specified address
++ */
++
++#define ROUND_QUAD(x) (((size_t)(x) + 0xf) & ~0xf)
++
++/*
++ * do_i5osterm_init loads an ILE service program and extracts an
++ * ILE pointer to a procedure that is exported by that
++ * service program.
++ */
++
++int do_i5osterm_init()
++{
++   static char Qp0zSetTerminalMode_buf[sizeof(ILEpointer) + 15];
++   static char Qp0zIsATerminal_buf[sizeof(ILEpointer) + 15];
++   unsigned long long actmark;
++   int rc;
++
++   /* _ILELOADX() loads the service program */
++   actmark = _ILELOADX("QSYS/QP0ZTRMLC", ILELOAD_LIBOBJ);
++   if (actmark == -1)
++      return(-101);
++
++   /*
++    * xlc does not guarantee 16-byte alignment for
++    * static variables of any type, so we find an
++    * aligned area in an oversized buffer. _ILESYM()
++    * extracts an ILE procedure pointer from the
++    * service program activation
++    */
++
++   Qp0zSetTerminalMode_ILE = (ILEpointer*)ROUND_QUAD(Qp0zSetTerminalMode_buf);
++   Qp0zIsATerminal_ILE = (ILEpointer*)ROUND_QUAD(Qp0zIsATerminal_buf);
++   rc = _ILESYMX(Qp0zSetTerminalMode_ILE, actmark, "Qp0zSetTerminalMode");
++   if (rc == -1)
++      return(-102);
++   rc = _ILESYMX(Qp0zIsATerminal_ILE, actmark, "Qp0zIsATerminal");
++   if (rc == -1)
++      return(-103);
++
++   /*
++    * Save the current PID in static storage so we
++    * can determine when to re-initialize (after fork)
++    */
++   init_pid = getpid();
++   return(0);
++}
++
++/*
++ * Qp0zSetTerminalMode accepts the same arguments and returns
++ * the same result as the ILE procedure of the same name.
++ */
++int Qp0zSetTerminalMode(unsigned char mode,
++                        unsigned char type,
++                        unsigned char *reserved)
++{
++   int rc=0;
++   /*
++    * "Qp0zSetTerminalMode_result_type" and
++    * "Qp0zSetTerminalMode_signature" define the function
++    * result type and the sequence and type of all
++    * arguments needed for the ILE procedure identified
++    * by Qp0zSetTerminalMode
++    *
++    * NOTE: The fact that this argument list contains
++    * fixed-point arguments shorter than 4 bytes or
++    * floating-point arguments shorter than 8 bytes
++    * implies that the target ILE C procedure is compiled
++    * with #pragma argument(ileProcedureName, nowiden)
++    *
++    * Without this pragma, standard C linkage for ILE
++    * requires 1-byte and 2-byte integer arguments to be
++    * widened to 4-bytes and requires 4-byte floating-point
++    * arguments to be widened to 8-bytes
++    */
++   static Qp0zSetTerminalMode_result_type = RESULT_INT32;
++   static arg_type_t Qp0zSetTerminalMode_signature[] =
++   {
++      ARG_UINT8,      /* requires #pragma nowiden in ILE code */
++      ARG_UINT8,      /* requires #pragma nowiden in ILE code */
++      ARG_MEMPTR,
++      ARG_END
++   };
++
++   /*
++    * Qp0zSetTerminalModeSt defines the structure of the ILE argument list.
++    * xlc provides 16-byte (relative) alignment of ILEpointer
++    * member fields because ILEpointer contains a 128-bit long
++    * double member. Explicit pad fields are only needed in
++    * front of structure and union types that do not naturally
++    * fall on ILE-mandated boundaries
++    */
++   typedef struct {
++      ILEarglist_base base;
++      unsigned char mode;
++      unsigned char type;
++      ILEpointer reserved;
++   } Qp0zSetTerminalModeSt;
++
++   /*
++    * xlc does not guarantee 16-byte alignment for
++    * automatic (stack) variables of any type, so we
++    * find an aligned area in an oversized buffer
++    */
++   char Qp0zSetTerminalMode_arglist_buf[sizeof(Qp0zSetTerminalModeSt) + 15];
++   Qp0zSetTerminalModeSt *Qp0zSetTerminalMode_arglist = (Qp0zSetTerminalModeSt*)ROUND_QUAD(Qp0zSetTerminalMode_arglist_buf);
++   /*
++    * Assignment statements are faster than calling
++    * build_ILEarglist()
++    */
++   Qp0zSetTerminalMode_arglist->mode = mode;
++   Qp0zSetTerminalMode_arglist->type = type;
++   Qp0zSetTerminalMode_arglist->reserved.s.addr = (address64_t)reserved;
++   /*
++    * Use a saved PID value to check if the ILE pointer
++    * is set. ILE procedure pointers inherited by the
++    * child process of a fork() are not usable because
++    * they point to an ILE activation group in the parent
++    * process
++    */
++   if (getpid() != init_pid)
++      rc = do_i5osterm_init();
++   if (rc) return(rc);
++
++   /*
++    * _ILECALL calls the ILE procedure. The stack may
++    * be unwound, but no heap storage is orphaned if
++    * an exception or signal occurs
++    */
++   _ILECALL(Qp0zSetTerminalMode_ILE,
++            &Qp0zSetTerminalMode_arglist->base,
++            Qp0zSetTerminalMode_signature,
++            Qp0zSetTerminalMode_result_type);
++   return Qp0zSetTerminalMode_arglist->base.result.s_int32.r_int32;
++}
++
++/*
++ * Qp0zIsATerminal accepts the same arguments and returns
++ * the same result as the ILE procedure of the same name.
++ */
++int Qp0zIsATerminal(int fd)
++{
++   int rc=0;
++   /*
++    * "Qp0zIsATerminal_result_type" and
++    * "Qp0zIsATerminal_signature" define the function
++    * result type and the sequence and type of all
++    * arguments needed for the ILE procedure identified
++    * by Qp0zIsATerminal
++    */
++   static Qp0zIsATerminal_result_type = RESULT_INT32;
++   static arg_type_t Qp0zIsATerminal_signature[] =
++   {
++      ARG_INT32,
++      ARG_END
++   };
++
++   /*
++    * Qp0zIsATerminalSt defines the structure of the ILE argument list.
++    * xlc provides 16-byte (relative) alignment of ILEpointer
++    * member fields because ILEpointer contains a 128-bit long
++    * double member. Explicit pad fields are only needed in
++    * front of structure and union types that do not naturally
++    * fall on ILE-mandated boundaries
++    */
++   typedef struct {
++      ILEarglist_base base;
++      int32 fd;
++   } Qp0zIsATerminalSt;
++
++   /*
++    * xlc does not guarantee 16-byte alignment for
++    * automatic (stack) variables of any type, so we
++    * find an aligned area in an oversized buffer
++    */
++   char Qp0zIsATerminal_arglist_buf[sizeof(Qp0zIsATerminalSt) + 15];
++   Qp0zIsATerminalSt *Qp0zIsATerminal_arglist = (Qp0zIsATerminalSt*)ROUND_QUAD(Qp0zIsATerminal_arglist_buf);
++   /*
++    * Assignment statements are faster than calling
++    * build_ILEarglist()
++    */
++   Qp0zIsATerminal_arglist->fd = fd;
++   /*
++    * Use a saved PID value to check if the ILE pointer
++    * is set. ILE procedure pointers inherited by the
++    * child process of a fork() are not usable because
++    * they point to an ILE activation group in the parent
++    * process
++    */
++   if (getpid() != init_pid)
++      rc = do_i5osterm_init();
++   if (rc) return(rc);
++
++   /*
++    * _ILECALL calls the ILE procedure. The stack may
++    * be unwound, but no heap storage is orphaned if
++    * an exception or signal occurs
++    */
++   _ILECALL(Qp0zIsATerminal_ILE,
++            &Qp0zIsATerminal_arglist->base,
++            Qp0zIsATerminal_signature,
++            Qp0zIsATerminal_result_type);
++   return Qp0zIsATerminal_arglist->base.result.s_int32.r_int32;
++}
