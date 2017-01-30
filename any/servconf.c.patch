@@ -1,5 +1,5 @@
 --- a/servconf.c	2015-06-30 21:35:31.000000000 -0500
-+++ b/servconf.c	2016-02-08 16:28:56.301771534 -0600
++++ b/servconf.c	2017-01-30 11:19:56.561664463 -0600
 @@ -167,6 +167,9 @@
  	options->ip_qos_bulk = -1;
  	options->version_addendum = NULL;
@@ -10,47 +10,55 @@
  }
  
  /* Returns 1 if a string option is unset or set to "none" or 0 otherwise. */
-@@ -344,6 +347,10 @@
- 	/* Turn privilege separation on by default */
- 	if (use_privsep == -1)
- 		use_privsep = PRIVSEP_NOSANDBOX;
+@@ -329,6 +332,10 @@
+ 	}
+ 	if (options->permit_tun == -1)
+ 		options->permit_tun = SSH_TUNMODE_NO;
 +#ifdef __PASE__
 +	if (options->pase_shell == NULL)
 +		options->pase_shell = xstrdup(_PATH_BSHELL);
 +#endif
- 
- #define CLEAR_ON_NONE(v) \
- 	do { \
+ 	if (options->ip_qos_interactive == -1)
+ 		options->ip_qos_interactive = IPTOS_LOWDELAY;
+ 	if (options->ip_qos_bulk == -1)
 @@ -412,6 +419,9 @@
  	sAuthenticationMethods, sHostKeyAgent, sPermitUserRC,
  	sStreamLocalBindMask, sStreamLocalBindUnlink,
  	sAllowStreamLocalForwarding, sFingerprintHash,
 +#ifdef __PASE__
-+	sPaseShell,
++	sIBMPASEforiShell, sIBMPASEforiEnv, sIBMPASEforiLangid, sIBMPASEforiCntryid,
 +#endif
  	sDeprecated, sUnsupported
  } ServerOpCodes;
  
-@@ -549,6 +559,9 @@
+@@ -549,6 +559,12 @@
  	{ "streamlocalbindunlink", sStreamLocalBindUnlink, SSHCFG_ALL },
  	{ "allowstreamlocalforwarding", sAllowStreamLocalForwarding, SSHCFG_ALL },
  	{ "fingerprinthash", sFingerprintHash, SSHCFG_GLOBAL },
 +#ifdef __PASE__
-+	{ "ibmpaseforishell", sPaseShell},
++	{ "ibmpaseforishell",   sIBMPASEforiShell,   SSHCFG_GLOBAL},
++	{ "ibmpaseforienv",     sIBMPASEforiEnv,     SSHCFG_GLOBAL},
++	{ "ibmpaseforilangid",  sIBMPASEforiLangid,  SSHCFG_GLOBAL},
++	{ "ibmpaseforicntryid", sIBMPASEforiCntryid, SSHCFG_GLOBAL},
 +#endif
  	{ NULL, sBadOption, 0 }
  };
  
-@@ -1672,6 +1686,12 @@
+@@ -1672,6 +1688,17 @@
  			options->adm_forced_command = xstrdup(cp + len);
  		return 0;
  
 +#ifdef __PASE__
-+	case sPaseShell:
++	case sIBMPASEforiShell:
 +		charptr = &options->pase_shell;
 +		goto parse_filename;
-+#endif
 +
++	/* These are ignored */
++	case sIBMPASEforiEnv:
++	case sIBMPASEforiLangid:
++	case sIBMPASEforiCntryid:
++		return 0;
++#endif
  	case sChrootDirectory:
  		charptr = &options->chroot_directory;
  

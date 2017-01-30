@@ -1,5 +1,6 @@
+diff -u a/auth.c b/auth.c
 --- a/auth.c	2015-06-30 21:35:31.000000000 -0500
-+++ b/auth.c	2016-02-05 11:35:20.077252267 -0600
++++ b/auth.c	2017-01-30 11:57:21.882731717 -0600
 @@ -162,7 +162,11 @@
  	if (options.chroot_directory == NULL ||
  	    strcasecmp(options.chroot_directory, "none") == 0) {
@@ -12,3 +13,51 @@
  
  		if (stat(shell, &st) != 0) {
  			logit("User %.100s not allowed because shell %.100s "
+@@ -614,15 +618,18 @@
+ 	ci->user = user;
+ 	parse_server_match_config(&options, ci);
+ 
++#ifndef __PASE__
+ #if defined(_AIX) && defined(HAVE_SETAUTHDB)
+ 	aix_setauthdb(user);
+ #endif
++#endif
+ 
+ 	pw = getpwnam(user);
+-
++#ifndef __PASE__
+ #if defined(_AIX) && defined(HAVE_SETAUTHDB)
+ 	aix_restoreauthdb();
+ #endif
++#endif
+ #ifdef HAVE_CYGWIN
+ 	/*
+ 	 * Windows usernames are case-insensitive.  To avoid later problems
+@@ -639,6 +646,27 @@
+ 	if (pw == NULL) {
+ 		logit("Invalid user %.100s from %.100s",
+ 		    user, get_remote_ipaddr());
++		    
++#ifdef __PASE__
++        /*
++         * If the user doesn't exist we want to make a call to 
++         * QsyGetProfileHandleNoPwd to force a "nonexistent user" 
++         * QAUDJRN audit journal entry of type PW.
++         */
++	    int  rc;
++	    char profileHandle[12];
++        struct {
++           int bytesProvided;
++           int bytesAvailable;
++           char msgID[7];
++           char reserved;
++        } errorCode;
++
++        errorCode.bytesProvided=sizeof(errorCode);
++        errorCode.bytesAvailable = 0;
++        rc = QsyGetProfileHandleNoPwd(profileHandle, user, "*NOPWD    ", &errorCode);	
++#endif
++		    
+ #ifdef CUSTOM_FAILED_LOGIN
+ 		record_failed_login(user,
+ 		    get_canonical_hostname(options.use_dns), "ssh");

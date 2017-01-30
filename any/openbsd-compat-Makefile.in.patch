@@ -1,11 +1,11 @@
 --- a/openbsd-compat/Makefile.in	2015-06-30 21:35:31.000000000 -0500
-+++ b/openbsd-compat/Makefile.in	2016-02-02 16:10:36.113852120 -0600
++++ b/openbsd-compat/Makefile.in	2017-01-10 10:14:33.541583836 -0600
 @@ -20,7 +20,7 @@
  
  COMPAT=arc4random.o bsd-asprintf.o bsd-closefrom.o bsd-cray.o bsd-cygwin_util.o bsd-getpeereid.o getrrsetbyname-ldns.o bsd-misc.o bsd-nextstep.o bsd-openpty.o bsd-poll.o bsd-setres_id.o bsd-snprintf.o bsd-statvfs.o bsd-waitpid.o fake-rfc2553.o openssl-compat.o xmmap.o xcrypt.o kludge-fd_set.o
  
 -PORTS=port-aix.o port-irix.o port-linux.o port-solaris.o port-tun.o port-uw.o
-+PORTS=port-aix.o port-irix.o port-linux.o port-pase.o port-solaris.o port-tun.o port-uw.o
++PORTS=port-aix.o port-irix.o port-linux.o port-solaris.o port-tun.o port-uw.o i5osprng.o i5osswap.o i5osterm.o
  
  .c.o:
  	$(CC) $(CFLAGS) $(CPPFLAGS) -c $<

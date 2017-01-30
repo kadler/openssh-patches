@@ -1,22 +1,39 @@
+diff -u a/platform.c b/platform.c
 --- a/platform.c	2015-06-30 21:35:31.000000000 -0500
-+++ b/platform.c	2016-02-08 19:47:44.258310987 -0600
-@@ -80,6 +80,9 @@
- #ifdef LINUX_OOM_ADJUST
- 	oom_adjust_restore();
++++ b/platform.c	2017-01-30 11:14:09.914618209 -0600
+@@ -112,6 +112,8 @@
+ 		solaris_set_default_project(pw);
  #endif
-+#ifdef __PASE__
-+	pase_post_fork_child();
+ 
++#ifndef __PASE__
++
+ #if defined(HAVE_LOGIN_CAP) && defined (__bsdi__)
+ 	if (getuid() == 0 || geteuid() == 0)
+ 		setpgid(0, 0);
+@@ -136,6 +138,8 @@
+ 			error("setluid: %s", strerror(errno));
+ 	}
+ #endif
++
 +#endif
  }
  
- /* return 1 if we are running with privilege to swap UIDs, 0 otherwise */
-@@ -89,6 +92,9 @@
- #ifdef HAVE_CYGWIN
- 	/* uid 0 is not special on Cygwin so always try */
- 	return 1;
-+#elif defined(__PASE__)
-+	/* uid 0 is not special on IBM i so always try */
-+	return 1;
- #else
- 	return (getuid() == 0 || geteuid() == 0);
+ /*
+@@ -145,6 +149,8 @@
+ void
+ platform_setusercontext_post_groups(struct passwd *pw)
+ {
++#ifndef __PASE__
++
+ #if !defined(HAVE_LOGIN_CAP) && defined(USE_PAM)
+ 	/*
+ 	 * PAM credentials may take the form of supplementary groups.
+@@ -186,6 +192,8 @@
+ #ifdef WITH_SELINUX
+ 	ssh_selinux_setup_exec_context(pw->pw_name);
  #endif
++
++#endif
+ }
+ 
+ char *

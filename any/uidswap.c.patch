@@ -1,20 +1,18 @@
+diff -u a/uidswap.c b/uidswap.c
 --- a/uidswap.c	2015-06-30 21:35:31.000000000 -0500
-+++ b/uidswap.c	2016-02-08 19:28:17.562258222 -0600
-@@ -49,8 +49,13 @@
- /* Saved effective uid. */
- static int	privileged = 0;
++++ b/uidswap.c	2017-01-30 11:14:09.926618340 -0600
+@@ -51,6 +51,10 @@
  static int	temporarily_use_uid_effective = 0;
-+#ifndef __PASE__
  static gid_t	*saved_egroups = NULL, *user_groups = NULL;
  static int	saved_egroupslen = -1, user_groupslen = -1;
-+#else
-+static profile_handle_t prev_handle;
-+static profile_handle_t curr_handle;
++#ifdef __PASE__
++static char     prevHandle[12];
++static char     profileHandle[12];
 +#endif
  
  /*
   * Temporarily changes to the given uid.  If the effective user
-@@ -59,6 +64,7 @@
+@@ -59,6 +63,7 @@
  void
  temporarily_use_uid(struct passwd *pw)
  {
@@ -22,23 +20,50 @@
  	/* Save the current euid, and egroups. */
  #ifdef SAVED_IDS_WORK_WITH_SETEUID
  	saved_euid = geteuid();
-@@ -129,6 +135,15 @@
+@@ -129,6 +134,42 @@
  	if (seteuid(pw->pw_uid) == -1)
  		fatal("seteuid %u: %.100s", (u_int)pw->pw_uid,
  		    strerror(errno));
-+#else /* __PASE__ */
-+	if(pase_temporarily_use_uid(pw, &prev_handle, &curr_handle) != 0) {
-+		privileged = 0;
-+		return;
-+	}
-+	
-+	privileged = 1;
-+	temporarily_use_uid_effective = 1;
-+#endif
++#else
++        int rc;
++        struct {
++            int bytesProvided;
++            int bytesAvailable;
++            char msgID[7];
++            char reserved;
++        } errorCode;
++
++        errorCode.bytesProvided=sizeof(errorCode);
++        errorCode.bytesAvailable = 0;
++        rc = QsyGetProfileHandleNoPwd(prevHandle, "*CURRENT  ", "*NOPWD    ", &errorCode);
++        debug("temporarily_use_uid:  GetPH *current rc=%d avail=%d msgid=%.7s",
++               rc, errorCode.bytesAvailable, errorCode.msgID);
++        if (rc != 0)
++           fatal("QsyGetProfileHandleNoPwd *CURRENT %.7s", errorCode.msgID);
++
++        errorCode.bytesProvided=sizeof(errorCode);
++        errorCode.bytesAvailable = 0;
++        rc = QsyGetProfileHandleNoPwd(profileHandle, pw->pw_name, "*NOPWD    ", &errorCode);
++        debug("temporarily_use_uid:  GetPH pw_name %s rc=%d avail=%d msgid=%.7s",
++               pw->pw_name, rc, errorCode.bytesAvailable, errorCode.msgID);
++        if (rc != 0)
++           fatal("QsyGetProfileHandleNoPwd %s %.7s", pw->pw_name, errorCode.msgID);
++
++        errorCode.bytesProvided=sizeof(errorCode);
++        errorCode.bytesAvailable = 0;
++        rc = QsySetToProfileHandle(profileHandle, &errorCode);
++        debug("temporarily_use_uid:  SetPH rc=%d avail=%d msgid=%.7s",
++               rc, errorCode.bytesAvailable, errorCode.msgID);
++        if (rc != 0)
++           fatal("QsySetToProfileHandle %.7s", errorCode.msgID);
++
++        privileged = 1;
++        temporarily_use_uid_effective = 1;
++#endif /* i5OS_PASE */
  }
  
  void
-@@ -170,6 +185,7 @@
+@@ -170,6 +211,7 @@
  	if (!temporarily_use_uid_effective)
  		fatal("restore_uid: temporarily_use_uid not effective");
  
@@ -46,34 +71,127 @@
  #ifdef SAVED_IDS_WORK_WITH_SETEUID
  	debug("restore_uid: %u/%u", (u_int)saved_euid, (u_int)saved_egid);
  	/* Set the effective uid back to the saved privileged uid. */
-@@ -190,6 +206,12 @@
+@@ -190,6 +232,37 @@
  	if (setgroups(saved_egroupslen, saved_egroups) < 0)
  		fatal("setgroups: %.100s", strerror(errno));
  	temporarily_use_uid_effective = 0;
-+#else /* __PASE__ */
-+	if(pase_restore_uid(&prev_handle, &curr_handle) < 0) {
-+		fatal("pase_restore_uid encountered error");
-+	}
++#else
++    int rc;
++    struct {
++        int bytesProvided;
++        int bytesAvailable;
++        char msgID[7];
++        char reserved;
++    } errorCode;
++
++    errorCode.bytesProvided=sizeof(errorCode);
++    errorCode.bytesAvailable = 0;
++    rc = QsySetToProfileHandle(prevHandle, &errorCode);
++    debug("restore_uid:  SetPH rc=%d avail=%d msgid=%.7s",
++           rc, errorCode.bytesAvailable, errorCode.msgID);
++    if (rc != 0)
++       fatal("QsySetToProfileHandle %.7s", errorCode.msgID);
++
++    errorCode.bytesProvided=sizeof(errorCode);
++    errorCode.bytesAvailable = 0;
++    rc = QsyReleaseProfileHandle(prevHandle, &errorCode);
++    debug("restore_uid:  ReleasePH prevHandle rc=%d avail=%d msgid=%.7s",
++           rc, errorCode.bytesAvailable, errorCode.msgID);
++
++    errorCode.bytesProvided=sizeof(errorCode);
++    errorCode.bytesAvailable = 0;
++    rc = QsyReleaseProfileHandle(profileHandle, &errorCode);
++    debug("restore_uid:  ReleasePH profileHandle rc=%d avail=%d msgid=%.7s",
++               rc, errorCode.bytesAvailable, errorCode.msgID);
++
 +	temporarily_use_uid_effective = 0;
 +#endif
  }
  
  /*
-@@ -227,7 +249,7 @@
+@@ -206,6 +279,7 @@
+ 
+ 	if (pw == NULL)
+ 		fatal("permanently_set_uid: no user given");
++#ifndef __PASE__
+ 	if (temporarily_use_uid_effective)
+ 		fatal("permanently_set_uid: temporarily_use_uid effective");
+ 	debug("permanently_set_uid: %u/%u", (u_int)pw->pw_uid,
+@@ -227,12 +301,63 @@
  	if (setresuid(pw->pw_uid, pw->pw_uid, pw->pw_uid) < 0)
  		fatal("setresuid %u: %.100s", (u_int)pw->pw_uid, strerror(errno));
  
--#ifndef HAVE_CYGWIN
-+#if !defined(HAVE_CYGWIN) && !defined(__PASE__)
++#else
++        int rc;
++        struct {
++            int bytesProvided;
++            int bytesAvailable;
++            char msgID[7];
++            char reserved;
++        } errorCode;
++        char profileHandle[12];
++
++        if (temporarily_use_uid_effective)
++            fatal("permanently_set_uid: temporarily_use_uid effective");
++        debug("permanently_set_uid: %u/%u", (u_int)pw->pw_uid,
++              (u_int)pw->pw_gid);
++
++        errorCode.bytesProvided=sizeof(errorCode);
++        errorCode.bytesAvailable = 0;
++        rc = QsyGetProfileHandleNoPwd(profileHandle, pw->pw_name, "*NOPWD    ", &errorCode);
++        debug("permanently_set_uid GetPH pw_name %s rc=%d avail=%d msgid=%.7s",
++              pw->pw_name, rc, errorCode.bytesAvailable, errorCode.msgID);
++        if (rc != 0)
++            fatal("QsyGetProfileHandleNoPwd %s %.7s", pw->pw_name, errorCode.msgID);
++
++        errorCode.bytesProvided=sizeof(errorCode);
++        errorCode.bytesAvailable = 0;
++        rc = QsySetToProfileHandle(profileHandle, &errorCode);
++        debug("permanently_set_uid SetPH rc=%d avail=%d msgid=%.7s",
++              rc, errorCode.bytesAvailable, errorCode.msgID);
++        if (rc != 0)
++            fatal("QsySetToProfileHandle %.7s", errorCode.msgID);
++
++        errorCode.bytesProvided=sizeof(errorCode);
++        errorCode.bytesAvailable = 0;
++        rc = QsyReleaseProfileHandle(profileHandle, &errorCode);
++        debug("permanently_set_uid ReleasePH profileHandle rc=%d avail=%d msgid=%.7s",
++              rc, errorCode.bytesAvailable, errorCode.msgID);
++
++        errorCode.bytesProvided=sizeof(errorCode);
++        errorCode.bytesAvailable = 0;
++        rc = QWTCHGJB(2, &errorCode); /* 2 == set job attributes to new current user profile */
++        debug("permanently_set_uid QWTCHGJB rc=%d avail=%d msgid=%.7s",
++               rc, errorCode.bytesAvailable, errorCode.msgID);
++        /* ignore errors on this -- compatibility w/ prior releases when we did not do at all */
++        /* and in chroot case, this will fail with missing QSYS stuff /qsys.lib/en_us.locale  */
++        /* if (rc != 0)                                                                       */
++        /*   fatal("permanently_set_uid QWTCHGJB rc %.7s", errorCode.msgID)                   */
++
++#endif
++
+ #ifndef HAVE_CYGWIN
++#ifndef __PASE__
  	/* Try restoration of GID if changed (test clearing of saved gid) */
  	if (old_gid != pw->pw_gid && pw->pw_uid != 0 &&
  	    (setgid(old_gid) != -1 || setegid(old_gid) != -1))
-@@ -241,7 +263,7 @@
- 		    (u_int)pw->pw_gid);
+ 		fatal("%s: was able to restore old [e]gid", __func__);
+ #endif
++#endif
+ 
+ 	/* Verify GID drop was successful */
+ 	if (getgid() != pw->pw_gid || getegid() != pw->pw_gid) {
+@@ -242,11 +367,13 @@
  	}
  
--#ifndef HAVE_CYGWIN
-+#if !defined(HAVE_CYGWIN) && !defined(__PASE__)
+ #ifndef HAVE_CYGWIN
++#ifndef __PASE__
  	/* Try restoration of UID if changed (test clearing of saved uid) */
  	if (old_uid != pw->pw_uid &&
  	    (setuid(old_uid) != -1 || seteuid(old_uid) != -1))
+ 		fatal("%s: was able to restore old [e]uid", __func__);
+ #endif
++#endif
+ 
+ 	/* Verify UID drop was successful */
+ 	if (getuid() != pw->pw_uid || geteuid() != pw->pw_uid) {

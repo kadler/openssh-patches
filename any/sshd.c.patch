@@ -1,13 +1,62 @@
 --- a/sshd.c	2015-06-30 21:35:31.000000000 -0500
-+++ b/sshd.c	2016-02-08 15:45:40.717654146 -0600
-@@ -1984,6 +1987,10 @@
++++ b/sshd.c	2017-01-30 11:36:54.686596779 -0600
+@@ -1984,6 +1984,18 @@
  	/* Reinitialize the log (because of the fork above). */
  	log_init(__progname, options.log_level, options.log_facility, log_stderr);
  
 +#ifdef __PASE__
-+	pase_set_server_type();
++	struct {
++		int bytesProvided;
++		int bytesAvailable;
++		char msgID[7];
++		char reserved;
++	} errorCode;
++	errorCode.bytesProvided=sizeof(errorCode);
++	errorCode.bytesAvailable = 0;
++	QWTCHGJB(1, &errorCode); /* 1 == change job server type to sshd */
 +#endif
 +
  	/* Chdir to the root directory so that the current disk can be
  	   unmounted if desired. */
  	if (chdir("/") == -1)
+@@ -2021,6 +2033,40 @@
+ 				fprintf(f, "%ld\n", (long) getpid());
+ 				fclose(f);
+ 			}
++#ifdef __PASE__
++			/* Make sure the sshd.pid file is only world readable */
++			if (chmod(options.pid_file, (mode_t) 0644) < 0) {
++				error("Couldn't chmod pid file \"%s\": %s", options.pid_file, strerror(errno));
++			}
++
++
++			/* 
++			  On i5/OS also record our pid in /QOpenSys/QIBM/UserData/SC1/OpenSSH/etc/sshd.pid
++			  for QSC101SRVR server start/end program to find the right pid
++			  and also allow user to change location of pid file above without
++			  having to add logic to QSC101SRVR to parse the options file.
++
++			  Only do this when started with STRTCPSVR - we use debug_flag and
++			  ports_from_cmdline as flags indicative of a "manual" (not STRTCPSVR)
++			  invocation 
++			*/
++			if (!debug_flag && !options.ports_from_cmdline) {
++#define I5OS_PIDFILE SSHDIR "/sshd.pid"
++		                f = fopen(I5OS_PIDFILE, "w");
++
++				if (f == NULL) {
++					error("Couldn't create pid file \"%s\": %s", I5OS_PIDFILE, strerror(errno));
++				} else {
++					/* Make sure the sshd.pid file is only world readable */
++					if (chmod(I5OS_PIDFILE, (mode_t) 0644) < 0) {
++						error("Couldn't chmod pid file \"%s\": %s", I5OS_PIDFILE, strerror(errno));
++					}
++
++					fprintf(f, "%ld\n", (long) getpid());
++					fclose(f);
++				}
++			} /* create I5OS_PIDFILE */
++#endif
+ 		}
+ 
+ 		/* Accept a connection and return in a forked child */

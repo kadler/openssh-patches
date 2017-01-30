@@ -1,60 +1,82 @@
+diff -ru a/openbsd-compat/readpassphrase.c b/openbsd-compat/readpassphrase.c
 --- a/openbsd-compat/readpassphrase.c	2015-06-30 21:35:31.000000000 -0500
-+++ b/openbsd-compat/readpassphrase.c	2016-01-28 18:47:48.905206392 -0600
-@@ -63,6 +63,10 @@
++++ b/openbsd-compat/readpassphrase.c	2017-01-30 11:39:34.459171139 -0600
+@@ -54,6 +54,18 @@
+ # endif
+ #endif
+ 
++#ifdef __PASE__
++int Qp0zIsATerminal(int fd);
++int Qp0zSetTerminalMode(unsigned char mode,
++                        unsigned char type,
++                        unsigned char *reserved);
++/* Values for Qp0zSetTerminalMode() - from qp0ztrml.h */
++#define QP0Z_TERMINAL_INPUT_MODE  0x01 /* Set input mode @B2A*/
++#define QP0Z_TERMINAL_HIDDEN      0xBD /* Set hidden input mode @B2A*/
++#define QP0Z_TERMINAL_NORMAL      0xBE /* Set normal input mode @B2A*/
++#define QP0Z_TERMINAL_PREVIOUS    0x49 /* Set previous mode @B2A*/
++#endif
++
+ static volatile sig_atomic_t signo[_NSIG];
+ 
+ static void handler(int);
+@@ -63,6 +75,9 @@
  {
  	ssize_t nr;
  	int input, output, save_errno, i, need_restart;
 +#ifdef __PASE__
-+       int echo_off_5250=0;
-+	int pase_is_5250 = 0;
++    int qp0zechooff=0;
 +#endif
  	char ch, *p, *end;
  	struct termios term, oterm;
  	struct sigaction sa, savealrm, saveint, savehup, savequit, saveterm;
-@@ -73,6 +77,18 @@
- 		errno = EINVAL;
- 		return(NULL);
- 	}
-+	
+@@ -87,8 +102,16 @@
+ 	if ((flags & RPP_STDIN) ||
+ 	    (input = output = open(_PATH_TTY, O_RDWR)) == -1) {
+ 		if (flags & RPP_REQUIRE_TTY) {
 +#ifdef __PASE__
-+	/* When run under a 5250 session on IBM i, there will be no TTY,
-+	 * but we can disable and enable echoing through the
-+	 * Qp0zSetTerminalMode API. 
-+	 */
-+	pase_is_5250 = Qp0zIsATerminal(STDIN_FILENO);
-+	if(pase_is_5250 == 1) {
-+		flags |= RPP_STDIN;
-+		flags &= ~RPP_REQUIRE_TTY;
-+	}
++                /* Last chance - see if it is a 5250 session */
++                if(!Qp0zIsATerminal(STDIN_FILENO)) {
++                    debug2("readpassphrase: not a 5250 return ENOTTY");
 +#endif
- 
- restart:
- 	for (i = 0; i < _NSIG; i++)
-@@ -113,6 +129,14 @@
+ 			errno = ENOTTY;
+ 			return(NULL);
++#ifdef __PASE__
++                }
++#endif
+ 		}
+ 		input = STDIN_FILENO;
+ 		output = STDERR_FILENO;
+@@ -113,6 +136,16 @@
  	(void)sigaction(SIGTTOU, &sa, &savettou);
  
  	/* Turn off echo if possible. */
 +#ifdef __PASE__
-+	if (pase_is_5250 && !echo_off_5250 && !(flags & RPP_ECHO_ON)) {
-+		if (Qp0zSetTerminalMode(QP0Z_TERMINAL_INPUT_MODE,
-+								QP0Z_TERMINAL_HIDDEN) == 0) {
-+			echo_off_5250 = 1;
-+		}
-+	}
++        if ((!(flags & RPP_ECHO_ON)) && (Qp0zIsATerminal(input)) && (qp0zechooff==0)) {
++            debug2("readpassphrase: turning 5250 echo off");
++            if ( Qp0zSetTerminalMode(QP0Z_TERMINAL_INPUT_MODE,
++                                     QP0Z_TERMINAL_HIDDEN,
++                                     NULL) == 0 ) {
++                qp0zechooff = 1;
++            }
++        }
 +#endif
  	if (input != STDIN_FILENO && tcgetattr(input, &oterm) == 0) {
  		memcpy(&term, &oterm, sizeof(term));
  		if (!(flags & RPP_ECHO_ON))
-@@ -155,6 +179,13 @@
+@@ -155,6 +188,16 @@
  	}
  
  	/* Restore old terminal settings and signals. */
 +#ifdef __PASE__
-+	if (echo_off_5250) {
-+		echo_off_5250 = 0;
-+		Qp0zSetTerminalMode(QP0Z_TERMINAL_INPUT_MODE,
-+							QP0Z_TERMINAL_PREVIOUS);
-+	}
++        if (qp0zechooff == 1) {
++            debug2("readpassphrase: turning 5250 echo previous");
++            if ( Qp0zSetTerminalMode(QP0Z_TERMINAL_INPUT_MODE,
++                                     QP0Z_TERMINAL_PREVIOUS,
++                                     NULL) == 0 ) {
++                qp0zechooff = 0;
++            }
++        }
 +#endif
  	if (memcmp(&term, &oterm, sizeof(term)) != 0) {
  		while (tcsetattr(input, _T_FLUSH, &oterm) == -1 &&

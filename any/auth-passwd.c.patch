@@ -1,0 +1,42 @@
+diff -u a/auth-passwd.c b/auth-passwd.c
+--- a/auth-passwd.c	2015-06-30 21:35:31.000000000 -0500
++++ b/auth-passwd.c	2017-01-30 11:16:28.427997047 -0600
+@@ -123,10 +123,38 @@
+ 			authctxt->force_pwchange = 1;
+ 	}
+ #endif
++#ifdef __PASE__
++    /* only do this if valid userid */
++    if(strcmp(pw->pw_name, fakepw()->pw_name)) {
++        int rc;
++        struct {
++            int bytesProvided;
++            int bytesAvailable;
++            char msgID[7];
++            char reserved;
++        } errorCode;
++        char profileHandle[12];
++
++        errorCode.bytesProvided = sizeof(errorCode);
++        errorCode.bytesAvailable = 0;
++
++        rc = QsyGetProfileHandle(profileHandle, pw->pw_name, password, strlen(password), 0, &errorCode);
++        debug("auth_password:  GetPH pw->pw_name=%s rc=%d avail=%d msgid=%.7s\n",
++              pw->pw_name, rc, errorCode.bytesAvailable, errorCode.msgID);
++        if(rc == 0) {
++            rc = QsyReleaseProfileHandle(profileHandle, &errorCode);
++            debug("auth_password:  ReleasePH rc=%d avail=%d msgid=%.7s",
++                  rc, errorCode.bytesAvailable, errorCode.msgID);
++            return(1);
++        }
++    }
++	return (sys_auth_passwd(authctxt, password) && ok);
++#else
+ 	result = sys_auth_passwd(authctxt, password);
+ 	if (authctxt->force_pwchange)
+ 		disable_forwarding();
+ 	return (result && ok);
++#endif
+ }
+ 
+ #ifdef BSD_AUTH
