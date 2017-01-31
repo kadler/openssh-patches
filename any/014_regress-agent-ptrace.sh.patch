@@ -1,0 +1,11 @@
+--- openssh-6.9p1/regress/agent-ptrace.sh	2017-01-30 18:43:37.348405812 -0600
++++ openssh-6.9p1.i5os-7.1/regress/agent-ptrace.sh	2017-01-30 18:43:10.183926275 -0600
+@@ -5,7 +5,7 @@
+ 
+ if have_prog uname ; then
+ 	case `uname` in
+-	AIX|CYGWIN*|OSF1)
++	AIX|CYGWIN*|OSF1|OS400)
+ 		echo "skipped (not supported on this platform)"
+ 		exit 0
+ 		;;
