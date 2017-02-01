@@ -1,0 +1,324 @@
+--- a/regress/ibmi.sh	1969-12-31 18:00:00.000000000 -0600
++++ b/regress/ibmi.sh	2017-01-10 10:14:33.477583836 -0600
+@@ -0,0 +1,320 @@
++#!/usr/bin/env bash
++
++tid="ibmi specific test"
++
++export PASE_USRGRP_LIMITED=N
++export CHROOTDIR=/QOpenSys/chroot
++
++# IBM i SSH tests
++users=(
++    longusrnam
++    chrtusr
++    grp1prim
++    grp1secn
++    grp2prim
++    grp2secn
++)
++
++groups=(
++    group1
++    group2
++    dummy
++)
++
++function script_cleanup
++{
++    for user in "${users[@]}"
++    do
++        if ! system "DLTUSRPRF USRPRF($user) OWNOBJOPT(*DLT)" > tmpout 2>&1
++        then
++            grep -q CPF2204 tmpout || fatal "Couldn't delete user $user"
++        fi
++        rm tmpout
++    done
++
++    for group in "${groups[@]}"
++    do
++        if ! system "DLTUSRPRF USRPRF($group) OWNOBJOPT(*DLT) PGPOPT(*CHGPGP *NONE)" > tmpout 2>&1
++        then
++            grep -q CPF2204 tmpout || fatal "Couldn't delete group $group"
++        fi
++        rm tmpout
++    done
++    
++    rm setup_complete
++}
++
++function script_setup
++{
++    for group in "${groups[@]}"
++    do
++        system "CRTUSRPRF USRPRF($group) PASSWORD(*NONE)" > /dev/null 2>&1 || fatal "Couldn't create group $group"
++    done
++
++    system "CRTUSRPRF USRPRF(grp1prim) PASSWORD(*none) GRPPRF(group1) SUPGRPPRF(*none)" > /dev/null 2>&1 || fatal "Couldn't create user grp1prim"
++    system "CRTUSRPRF USRPRF(grp1secn) PASSWORD(*none) GRPPRF(dummy) SUPGRPPRF(group1)" > /dev/null 2>&1 || fatal "Couldn't create user grp1secn"
++    system "CRTUSRPRF USRPRF(grp2prim) PASSWORD(*none) GRPPRF(group2) SUPGRPPRF(*none)" > /dev/null 2>&1 || fatal "Couldn't create user grp2prim"
++    system "CRTUSRPRF USRPRF(grp2secn) PASSWORD(*none) GRPPRF(dummy) SUPGRPPRF(group2)" > /dev/null 2>&1 || fatal "Couldn't create user grp2secn"
++
++    system "CRTUSRPRF USRPRF(longusrnam) PASSWORD(*none)" > /dev/null 2>&1 || fatal "Couldn't create user longusrnam"
++    system "CRTUSRPRF USRPRF(chrtusr) PASSWORD(*none)" > /dev/null 2>&1 || fatal "Couldn't create user chrtusr"
++
++    for user in "${users[@]}"
++    do
++        mkdir /home/$user
++        chown $user /home/$user
++    done
++
++    rm -r $CHROOTDIR
++    sh $(dirname $SCRIPT)/../contrib/os400/chroot_setup_script.sh chrtusr
++    cp /QOpenSys/usr/bin/true /QOpenSys/chroot/usr/bin
++}
++
++
++if [ ! -e setup_complete ]
++then
++    script_cleanup
++    script_setup
++    touch setup_complete
++fi
++
++function check_val
++{
++    val="$(cat $2)"
++    test "$1" == "$val" || fail "$2 \"$val\" doesn't match \"$1\""
++}
++
++function end_sshd
++{
++    test -f $PIDFILE || fatal "no sshd running on port $PORT"
++    pid=`cat $PIDFILE`
++    kill $pid
++    i=0;
++    while [ -f $PIDFILE -a $i -lt 10 ]; do
++            i=`expr $i + 1`
++            sleep $i
++    done
++    test -f $PIDFILE && \
++        fatal "sshd didn't exit port $PORT pid $pid"
++}
++
++cp sshd_config sshd_config.orig
++for user in "${users[@]}"
++do
++    cp authorized_keys_$USER authorized_keys_$user
++done
++
++# Test 1 - check >8 character user name
++verbose "test check >8 character user name"
++cp sshd_config.orig sshd_config
++start_sshd
++$SSH -p $PORT -F ssh_config -E$TEST_SSH_LOGFILE longusrnam@somehost true || fail "test 1 failed"
++end_sshd
++
++# Test 2 - check chroot user
++verbose "test check chroot user"
++if [ "x$SUDO" = "x" ]
++then
++  echo "skipped: need SUDO for chroot"
++else
++cp sshd_config.orig sshd_config
++start_sshd
++TEST2VAL=$RANDOM
++$SSH -p $PORT -F ssh_config -E$TEST_SSH_LOGFILE chrtusr@somehost "echo $TEST2VAL > test" || fail "test 2 failed"
++check_val $TEST2VAL $CHROOTDIR/home/chrtusr/test || fail 'test 2 failed'
++end_sshd
++fi
++
++# Test 3 - AllowGroups
++verbose "test AllowGroups"
++cp sshd_config.orig sshd_config
++cat <<EOF >> sshd_config
++AllowGroups group1
++EOF
++
++start_sshd
++$SSH -p $PORT -F ssh_config -E$TEST_SSH_LOGFILE grp1prim@somehost true || fail "test 3 grp1prim failed"
++$SSH -p $PORT -F ssh_config -E$TEST_SSH_LOGFILE grp1secn@somehost true || fail "test 3 grp1secn failed"
++$SSH -p $PORT -F ssh_config -E$TEST_SSH_LOGFILE grp2prim@somehost true && fail "test 3 grp2prim failed"
++$SSH -p $PORT -F ssh_config -E$TEST_SSH_LOGFILE grp2secn@somehost true && fail "test 3 grp2secn failed"
++end_sshd
++
++# Test 4 - DenyGroups
++verbose "test DenyGroups"
++cp sshd_config.orig sshd_config
++cat <<EOF >> sshd_config
++DenyGroups group2
++EOF
++
++start_sshd
++$SSH -p $PORT -F ssh_config -E$TEST_SSH_LOGFILE grp1prim@somehost true || fail "test 4 grp1prim failed"
++$SSH -p $PORT -F ssh_config -E$TEST_SSH_LOGFILE grp1secn@somehost true || fail "test 4 grp1secn failed"
++$SSH -p $PORT -F ssh_config -E$TEST_SSH_LOGFILE grp2prim@somehost true && fail "test 4 grp2prim failed"
++$SSH -p $PORT -F ssh_config -E$TEST_SSH_LOGFILE grp2secn@somehost true && fail "test 4 grp2secn failed"
++end_sshd
++
++# Test 5 - AllowUsers
++verbose "test AllowUsers"
++cp sshd_config.orig sshd_config
++cat <<EOF >> sshd_config
++AllowUsers grp1prim grp1secn
++EOF
++
++start_sshd
++$SSH -p $PORT -F ssh_config -E$TEST_SSH_LOGFILE grp1prim@somehost true || fail "test 5 grp1prim failed"
++$SSH -p $PORT -F ssh_config -E$TEST_SSH_LOGFILE grp1secn@somehost true || fail "test 5 grp1secn failed"
++$SSH -p $PORT -F ssh_config -E$TEST_SSH_LOGFILE grp2prim@somehost true && fail "test 5 grp2prim failed"
++$SSH -p $PORT -F ssh_config -E$TEST_SSH_LOGFILE grp2secn@somehost true && fail "test 5 grp2secn failed"
++end_sshd
++
++# Test 6 - DenyUsers
++verbose "test DenyUsers"
++cp sshd_config.orig sshd_config
++cat <<EOF >> sshd_config
++DenyUsers grp2prim grp2secn
++EOF
++
++start_sshd
++$SSH -p $PORT -F ssh_config -E$TEST_SSH_LOGFILE grp1prim@somehost true || fail "test 6 grp1prim failed"
++$SSH -p $PORT -F ssh_config -E$TEST_SSH_LOGFILE grp1secn@somehost true || fail "test 6 grp1secn failed"
++$SSH -p $PORT -F ssh_config -E$TEST_SSH_LOGFILE grp2prim@somehost true && fail "test 6 grp2prim failed"
++$SSH -p $PORT -F ssh_config -E$TEST_SSH_LOGFILE grp2secn@somehost true && fail "test 6 grp2secn failed"
++end_sshd
++
++# Test 7 - Match Group
++verbose "test Match Group"
++cp sshd_config.orig sshd_config
++cat <<EOF >> sshd_config
++Match Group group1
++    AcceptEnv TEST7VAL
++EOF
++
++start_sshd
++export TEST7VAL=$RANDOM
++$SSH -p $PORT -F ssh_config -o SendEnv=TEST7VAL -E$TEST_SSH_LOGFILE grp1prim@somehost 'echo "dummy$TEST7VAL" > test' || fail "test 7 grp1prim failed"
++$SSH -p $PORT -F ssh_config -o SendEnv=TEST7VAL -E$TEST_SSH_LOGFILE grp1secn@somehost 'echo "dummy$TEST7VAL" > test' || fail "test 7 grp1secn failed"
++$SSH -p $PORT -F ssh_config -o SendEnv=TEST7VAL -E$TEST_SSH_LOGFILE grp2prim@somehost 'echo "dummy$TEST7VAL" > test' || fail "test 7 grp2prim failed"
++$SSH -p $PORT -F ssh_config -o SendEnv=TEST7VAL -E$TEST_SSH_LOGFILE grp2secn@somehost 'echo "dummy$TEST7VAL" > test' || fail "test 7 grp2secn failed"
++check_val "dummy$TEST7VAL" ~grp1prim/test || fail 'test 7 failed'
++check_val "dummy$TEST7VAL" ~grp1secn/test || fail 'test 7 failed'
++check_val "dummy" ~grp2prim/test || fail 'test 7 failed'
++check_val "dummy" ~grp2secn/test || fail 'test 7 failed'
++
++end_sshd
++
++# Test 8 - Match !Group
++verbose "test Match !Group"
++cp sshd_config.orig sshd_config
++cat <<EOF >> sshd_config
++Match Group !group2,*
++    AcceptEnv TEST8VAL
++EOF
++
++start_sshd
++export TEST8VAL=$RANDOM
++$SSH -p $PORT -F ssh_config -o SendEnv=TEST8VAL -E$TEST_SSH_LOGFILE grp1prim@somehost 'echo "dummy$TEST8VAL" > test' || fail "test 8 grp1prim failed"
++$SSH -p $PORT -F ssh_config -o SendEnv=TEST8VAL -E$TEST_SSH_LOGFILE grp1secn@somehost 'echo "dummy$TEST8VAL" > test' || fail "test 8 grp1secn failed"
++$SSH -p $PORT -F ssh_config -o SendEnv=TEST8VAL -E$TEST_SSH_LOGFILE grp2prim@somehost 'echo "dummy$TEST8VAL" > test' || fail "test 8 grp2prim failed"
++$SSH -p $PORT -F ssh_config -o SendEnv=TEST8VAL -E$TEST_SSH_LOGFILE grp2secn@somehost 'echo "dummy$TEST8VAL" > test' || fail "test 8 grp2secn failed"
++check_val "dummy$TEST8VAL" ~grp1prim/test || fail 'test 8 failed'
++check_val "dummy$TEST8VAL" ~grp1secn/test || fail 'test 8 failed'
++check_val "dummy" ~grp2prim/test || fail 'test 8 failed'
++check_val "dummy" ~grp2secn/test || fail 'test 8 failed'
++
++end_sshd
++
++# Test 9 - Match User
++verbose "test Match User"
++cp sshd_config.orig sshd_config
++cat <<EOF >> sshd_config
++Match User grp1*
++    AcceptEnv TEST9VAL
++EOF
++
++start_sshd
++export TEST9VAL=$RANDOM
++$SSH -p $PORT -F ssh_config -o SendEnv=TEST9VAL -E$TEST_SSH_LOGFILE grp1prim@somehost 'echo "dummy$TEST9VAL" > test' || fail "test 9 grp1prim failed"
++$SSH -p $PORT -F ssh_config -o SendEnv=TEST9VAL -E$TEST_SSH_LOGFILE grp1secn@somehost 'echo "dummy$TEST9VAL" > test' || fail "test 9 grp1secn failed"
++$SSH -p $PORT -F ssh_config -o SendEnv=TEST9VAL -E$TEST_SSH_LOGFILE grp2prim@somehost 'echo "dummy$TEST9VAL" > test' || fail "test 9 grp2prim failed"
++$SSH -p $PORT -F ssh_config -o SendEnv=TEST9VAL -E$TEST_SSH_LOGFILE grp2secn@somehost 'echo "dummy$TEST9VAL" > test' || fail "test 9 grp2secn failed"
++check_val "dummy$TEST9VAL" ~grp1prim/test || fail 'test 9 failed'
++check_val "dummy$TEST9VAL" ~grp1secn/test || fail 'test 9 failed'
++check_val "dummy" ~grp2prim/test || fail 'test 9 failed'
++check_val "dummy" ~grp2secn/test || fail 'test 9 failed'
++
++end_sshd
++
++# Test 10 - Match !User
++verbose "test Match !User"
++cp sshd_config.orig sshd_config
++cat <<EOF >> sshd_config
++Match User !grp2*,*
++    AcceptEnv TEST10VAL
++EOF
++
++start_sshd
++export TEST10VAL=$RANDOM
++$SSH -p $PORT -F ssh_config -o SendEnv=TEST10VAL -E$TEST_SSH_LOGFILE grp1prim@somehost 'echo "dummy$TEST10VAL" > test' || fail "test 10 grp1prim failed"
++$SSH -p $PORT -F ssh_config -o SendEnv=TEST10VAL -E$TEST_SSH_LOGFILE grp1secn@somehost 'echo "dummy$TEST10VAL" > test' || fail "test 10 grp1secn failed"
++$SSH -p $PORT -F ssh_config -o SendEnv=TEST10VAL -E$TEST_SSH_LOGFILE grp2prim@somehost 'echo "dummy$TEST10VAL" > test' || fail "test 10 grp2prim failed"
++$SSH -p $PORT -F ssh_config -o SendEnv=TEST10VAL -E$TEST_SSH_LOGFILE grp2secn@somehost 'echo "dummy$TEST10VAL" > test' || fail "test 10 grp2secn failed"
++check_val "dummy$TEST10VAL" ~grp1prim/test || fail 'test 10 failed'
++check_val "dummy$TEST10VAL" ~grp1secn/test || fail 'test 10 failed'
++check_val "dummy" ~grp2prim/test || fail 'test 10 failed'
++check_val "dummy" ~grp2secn/test || fail 'test 10 failed'
++
++end_sshd
++
++
++
++
++# Test 90 - ibmpaseforishell
++verbose "test ibmpaseforishell"
++cp sshd_config.orig sshd_config
++cat <<EOF >> sshd_config
++ibmpaseforishell $PWD/my_shell
++EOF
++
++TEST90VAL=$RANDOM
++cat <<EOF > my_shell
++#!/bin/sh
++echo $TEST90VAL > $PWD/test90val
++exit 0
++EOF
++chmod +x my_shell
++
++start_sshd
++$SSH -p $PORT -F ssh_config -E$TEST_SSH_LOGFILE somehost true || fail "test 90 failed"
++check_val $TEST90VAL test90val || fail 'test 90 failed'
++end_sshd
++
++
++# Test 91 - ibmpaseforienv
++verbose "test ibmpaseforienv"
++cp sshd_config.orig sshd_config
++cat <<EOF >> sshd_config
++ibmpaseforienv ASDF=BLAH
++EOF
++
++$SSHD -f sshd_config -t || fail "test 91 failed"
++
++
++# Test 92 - ibmpaseforicntryid
++verbose "test ibmpaseforicntryid"
++cp sshd_config.orig sshd_config
++cat <<EOF >> sshd_config
++ibmpaseforicntryid US
++EOF
++
++$SSHD -f sshd_config -t || fail "test 92 failed"
++
++
++# Test 93 - ibmpaseforilangid
++verbose "test ibmpaseforilangid"
++cp sshd_config.orig sshd_config
++cat <<EOF >> sshd_config
++ibmpaseforilangid ENU
++EOF
++
++$SSHD -f sshd_config -t || fail "test 93 failed"
++
++script_cleanup
