@@ -25,22 +25,22 @@
  platform_sys_dir_uid(uid_t uid)
  {
 +#ifdef __PASE__
-+       static uid_t qsys_uid = -1;
++	static uid_t qsys_uid = -1;
 +
-+       if(qsys_uid == (uid_t)-1)
-+       {
-+               struct passwd* pw;
-+               struct passwd pw_struct;
-+               char pw_buf[1024];
-+               getpwnam_r("qsys", &pw_struct, pw_buf, sizeof(pw_buf), &pw);
-+               if(pw)
-+                       qsys_uid = pw->pw_uid;
-+       }
++	if(qsys_uid == (uid_t)-1)
++	{
++		struct passwd* pw;
++		struct passwd pw_struct;
++		char pw_buf[1024];
++		getpwnam_r("qsys", &pw_struct, pw_buf, sizeof(pw_buf), &pw);
++		if(pw)
++			qsys_uid = pw->pw_uid;
++	}
 +
-+       if (uid == qsys_uid)
-+                       return 1;
++	if (uid == qsys_uid)
++			return 1;
 +#endif
-        if (uid == 0)
-                return 1;
+ 	if (uid == 0)
+ 		return 1;
  #ifdef PLATFORM_SYS_DIR_UID
 
