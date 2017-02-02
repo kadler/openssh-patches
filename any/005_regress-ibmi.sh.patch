@@ -1,6 +1,6 @@
 --- a/regress/ibmi.sh	1969-12-31 18:00:00.000000000 -0600
 +++ b/regress/ibmi.sh	2017-01-10 10:14:33.477583836 -0600
-@@ -0,0 +1,320 @@
+@@ -0,0 +1,324 @@
 +#!/usr/bin/env bash
 +
 +tid="ibmi specific test"
@@ -28,18 +28,18 @@
 +{
 +    for user in "${users[@]}"
 +    do
-+        if ! system "DLTUSRPRF USRPRF($user) OWNOBJOPT(*DLT)" > tmpout 2>&1
++        if ! system -i "DLTUSRPRF USRPRF($user) OWNOBJOPT(*DLT)" > tmpout 2>&1
 +        then
-+            grep -q CPF2204 tmpout || fatal "Couldn't delete user $user"
++            grep -q CPF2204 tmpout || fatal "Couldn't delete user $user: $(cat tmpout)"
 +        fi
 +        rm tmpout
 +    done
 +
 +    for group in "${groups[@]}"
 +    do
-+        if ! system "DLTUSRPRF USRPRF($group) OWNOBJOPT(*DLT) PGPOPT(*CHGPGP *NONE)" > tmpout 2>&1
++        if ! system -i "DLTUSRPRF USRPRF($group) OWNOBJOPT(*DLT) PGPOPT(*CHGPGP *NONE)" > tmpout 2>&1
 +        then
-+            grep -q CPF2204 tmpout || fatal "Couldn't delete group $group"
++            grep -q CPF2204 tmpout || fatal "Couldn't delete group $group: $(cat tmpout)"
 +        fi
 +        rm tmpout
 +    done
@@ -51,16 +51,16 @@
 +{
 +    for group in "${groups[@]}"
 +    do
-+        system "CRTUSRPRF USRPRF($group) PASSWORD(*NONE)" > /dev/null 2>&1 || fatal "Couldn't create group $group"
++        system -i "CRTUSRPRF USRPRF($group) PASSWORD(*NONE)" > /dev/null 2>&1 || fatal "Couldn't create group $group"
 +    done
 +
-+    system "CRTUSRPRF USRPRF(grp1prim) PASSWORD(*none) GRPPRF(group1) SUPGRPPRF(*none)" > /dev/null 2>&1 || fatal "Couldn't create user grp1prim"
-+    system "CRTUSRPRF USRPRF(grp1secn) PASSWORD(*none) GRPPRF(dummy) SUPGRPPRF(group1)" > /dev/null 2>&1 || fatal "Couldn't create user grp1secn"
-+    system "CRTUSRPRF USRPRF(grp2prim) PASSWORD(*none) GRPPRF(group2) SUPGRPPRF(*none)" > /dev/null 2>&1 || fatal "Couldn't create user grp2prim"
-+    system "CRTUSRPRF USRPRF(grp2secn) PASSWORD(*none) GRPPRF(dummy) SUPGRPPRF(group2)" > /dev/null 2>&1 || fatal "Couldn't create user grp2secn"
++    system -i "CRTUSRPRF USRPRF(grp1prim) PASSWORD(*none) GRPPRF(group1) SUPGRPPRF(*none) HOMEDIR('/home/grp1prim')" > /dev/null 2>&1 || fatal "Couldn't create user grp1prim"
++    system -i "CRTUSRPRF USRPRF(grp1secn) PASSWORD(*none) GRPPRF(dummy) SUPGRPPRF(group1) HOMEDIR('/home/grp1secn')" > /dev/null 2>&1 || fatal "Couldn't create user grp1secn"
++    system -i "CRTUSRPRF USRPRF(grp2prim) PASSWORD(*none) GRPPRF(group2) SUPGRPPRF(*none) HOMEDIR('/home/grp2prim')" > /dev/null 2>&1 || fatal "Couldn't create user grp2prim"
++    system -i "CRTUSRPRF USRPRF(grp2secn) PASSWORD(*none) GRPPRF(dummy) SUPGRPPRF(group2) HOMEDIR('/home/grp2secn')" > /dev/null 2>&1 || fatal "Couldn't create user grp2secn"
 +
-+    system "CRTUSRPRF USRPRF(longusrnam) PASSWORD(*none)" > /dev/null 2>&1 || fatal "Couldn't create user longusrnam"
-+    system "CRTUSRPRF USRPRF(chrtusr) PASSWORD(*none)" > /dev/null 2>&1 || fatal "Couldn't create user chrtusr"
++    system -i "CRTUSRPRF USRPRF(longusrnam) PASSWORD(*none) HOMEDIR('/home/longusrnam')" > /dev/null 2>&1 || fatal "Couldn't create user longusrnam"
++    system -i "CRTUSRPRF USRPRF(chrtusr) PASSWORD(*none) HOMEDIR('/home/chrtusr')" > /dev/null 2>&1 || fatal "Couldn't create user chrtusr"
 +
 +    for user in "${users[@]}"
 +    do
@@ -68,9 +68,12 @@
 +        chown $user /home/$user
 +    done
 +
-+    rm -r $CHROOTDIR
-+    sh $(dirname $SCRIPT)/../contrib/os400/chroot_setup_script.sh chrtusr
-+    cp /QOpenSys/usr/bin/true /QOpenSys/chroot/usr/bin
++    if [ ! -z "$SUDO" ]
++    then
++        rm -r $CHROOTDIR
++        sh $(dirname $SCRIPT)/../contrib/os400/chroot_setup_script.sh chrtusr
++        cp /QOpenSys/usr/bin/true /QOpenSys/chroot/usr/bin
++    fi
 +}
 +
 +
